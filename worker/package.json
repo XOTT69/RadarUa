@@ -1,17 +1,18 @@
 {
   "name": "radarua-worker",
   "private": true,
-  "version": "3.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js",
+    "vapid": "node scripts/generate-vapid.mjs"
   },
   "dependencies": {
-    "web-push": "^3.6.7"
+    "@mmmike/web-push": "1.3.0"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "4.127.0"
   }
 }
