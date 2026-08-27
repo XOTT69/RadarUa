@@ -17,7 +17,7 @@ async function request(path, options = {}) {
   return payload;
 }
 
-function normalizeThreat(item) {
+export function normalizeThreat(item) {
   return {
     id: String(item.id ?? crypto.randomUUID()),
     type: ['drone', 'missile', 'aviation', 'alert'].includes(item.type) ? item.type : 'alert',
@@ -33,7 +33,7 @@ function normalizeThreat(item) {
   };
 }
 
-export async function loadThreats(place) {
+export async function loadThreats(place, radiusKm = 25) {
   const params = new URLSearchParams();
   if (place?.lat != null) params.set('lat', place.lat);
   if (place?.lon != null) params.set('lon', place.lon);
@@ -41,12 +41,15 @@ export async function loadThreats(place) {
   if (place?.oblast) params.set('oblast', place.oblast);
   if (place?.district) params.set('district', place.district);
   if (place?.hromada) params.set('hromada', place.hromada);
+  params.set('radius', Math.max(5, Math.min(100, Number(radiusKm) || 25)));
   const payload = await request(`/api/threats?${params}`);
   const items = Array.isArray(payload) ? payload : payload?.items;
   return {
     items: Array.isArray(items) ? items.map(normalizeThreat) : [],
     localityStatus: payload?.localityStatus || null,
-    generatedAt: payload?.generatedAt || null
+    generatedAt: payload?.generatedAt || null,
+    monitoring: payload?.monitoring || null,
+    notice: payload?.notice || ''
   };
 }
 
@@ -55,15 +58,20 @@ export async function searchPlaces(query) {
   return Array.isArray(payload?.items) ? payload.items : [];
 }
 
+export function streamUrl() {
+  if (!apiReady()) return '';
+  return `${baseUrl().replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/api/stream`;
+}
+
 export async function getPushConfig() {
   return request('/api/push/config', { cache: 'no-store' });
 }
 
-export async function savePushSubscription(subscription, place, radiusKm) {
+export async function savePushSubscription(subscription, place, radiusKm, monitoring = true) {
   return request('/api/push/subscribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subscription, place, radiusKm })
+    body: JSON.stringify({ subscription, place, radiusKm, monitoring })
   });
 }
 
