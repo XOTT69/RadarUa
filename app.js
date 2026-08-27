@@ -1,7 +1,7 @@
-import { apiReady, loadThreats, searchPlaces, getPushConfig, savePushSubscription, deletePushSubscription } from './data/feed.js';
+import { apiReady, loadThreats, searchPlaces, streamUrl, normalizeThreat, getPushConfig, savePushSubscription, deletePushSubscription } from './data/feed.js';
 
 const config = window.RADAR_CONFIG || {};
-const STORAGE_KEY = 'radarua.settings.v3';
+const STORAGE_KEY = 'radarua.settings.v1';
 const state = {
   map: null,
   threats: [],
@@ -14,6 +14,9 @@ const state = {
   gpsMarker: null,
   installPrompt: null,
   refreshTimer: null,
+  ws: null,
+  wsReconnectTimer: null,
+  wsConnected: false,
   localityStatus: null,
   settings: loadSettings(),
   knownIds: new Set()
@@ -34,10 +37,11 @@ function loadSettings() {
       radiusKm: Number(saved.radiusKm || config.defaultRadiusKm || 25),
       onlyMine: saved.onlyMine ?? Boolean(config.defaultOnlyMyArea),
       notifications: saved.notifications ?? false,
+      monitoring: saved.monitoring ?? true,
       home: saved.home || null
     };
   } catch {
-    return { radiusKm: 25, onlyMine: true, notifications: false, home: null };
+    return { radiusKm: 25, onlyMine: true, notifications: false, monitoring: true, home: null };
   }
 }
 function saveSettings() {
@@ -76,6 +80,7 @@ function markerIcon(threat) {
 function isThreatRelevant(threat) {
   if (!state.home) return true;
   if (threat.meta?.appliesToLocality === true) return true;
+  if (threat.meta?.approximatePoint && threat.meta?.appliesToLocality !== true) return false;
   if (threat.lat != null && threat.lon != null) {
     return haversineKm(state.home.lat, state.home.lon, threat.lat, threat.lon) <= state.settings.radiusKm;
   }
@@ -83,7 +88,7 @@ function isThreatRelevant(threat) {
   return [state.home.name, state.home.oblast, state.home.district, state.home.hromada].filter(Boolean).some((x) => hay.includes(normalizeText(x)));
 }
 function visibleThreats() {
-  return state.threats.filter((t) => (state.filter === 'all' || t.type === state.filter) && (!state.settings.onlyMine || isThreatRelevant(t)));
+  return state.threats.filter((t) => (!t.meta?.monitoring || state.settings.monitoring) && (state.filter === 'all' || t.type === state.filter) && (!state.settings.onlyMine || isThreatRelevant(t)));
 }
 function renderHome() {
   state.home = state.settings.home || state.home;
@@ -123,7 +128,8 @@ function renderMarkers() {
   }
 }
 function renderCounts() {
-  const pool = state.settings.onlyMine ? state.threats.filter(isThreatRelevant) : state.threats;
+  const enabled = state.threats.filter((t) => !t.meta?.monitoring || state.settings.monitoring);
+  const pool = state.settings.onlyMine ? enabled.filter(isThreatRelevant) : enabled;
   const counts = { drone: 0, missile: 0, aviation: 0, alert: 0 };
   for (const t of pool) counts[t.type] = (counts[t.type] || 0) + 1;
   $('countAll').textContent = pool.length;
@@ -162,7 +168,7 @@ function renderProximity() {
     $('proximityText').textContent = state.localityStatus.detail || state.localityStatus.label || 'Активна тривога';
     card.classList.add('danger'); card.classList.remove('hidden'); return;
   }
-  const points = state.threats.filter((t) => t.lat != null && t.lon != null).map((t) => ({ ...t, distance: haversineKm(state.home.lat, state.home.lon, t.lat, t.lon) })).sort((a, b) => a.distance - b.distance);
+  const points = state.threats.filter((t) => t.lat != null && t.lon != null && !t.meta?.approximatePoint).map((t) => ({ ...t, distance: haversineKm(state.home.lat, state.home.lon, t.lat, t.lon) })).sort((a, b) => a.distance - b.distance);
   if (!points.length) { card.classList.add('hidden'); return; }
   const nearest = points[0];
   $('proximityTitle').textContent = nearest.distance <= state.settings.radiusKm ? 'Подія у вашому радіусі' : 'Найближча відображена подія';
@@ -180,7 +186,7 @@ async function maybeNotifyNew(items) {
   const relevant = items.filter((t) => isThreatRelevant(t));
   const fresh = relevant.filter((t) => !state.knownIds.has(t.id));
   items.forEach((t) => state.knownIds.add(t.id));
-  if (!state.settings.notifications || !('Notification' in window) || Notification.permission !== 'granted' || !fresh.length) return;
+  if (config.enableBackgroundPush || !state.settings.notifications || !('Notification' in window) || Notification.permission !== 'granted' || !fresh.length) return;
   const newest = fresh.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
   if (Date.now() - new Date(newest.timestamp).getTime() > 3 * 60 * 1000) return;
   const reg = await navigator.serviceWorker?.ready;
@@ -195,13 +201,13 @@ async function refreshThreats({ silent = false } = {}) {
   }
   if (!silent) setConnection('оновлення…');
   try {
-    const result = await loadThreats(state.home);
+    const result = await loadThreats(state.home, state.settings.radiusKm);
     await maybeNotifyNew(result.items);
     state.threats = result.items;
     state.localityStatus = result.localityStatus;
     renderAll();
     $('lastUpdated').textContent = `оновлено ${new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
-    setConnection('онлайн · офіційні дані'); $('modeBadge').textContent = 'LIVE';
+    setConnection(state.wsConnected ? 'онлайн · realtime' : 'онлайн · офіційні дані'); $('modeBadge').textContent = state.wsConnected ? 'RT' : 'LIVE';
   } catch (error) {
     console.error(error); setConnection('помилка API'); showToast(error.message || 'Не вдалося оновити дані');
   }
@@ -209,7 +215,7 @@ async function refreshThreats({ silent = false } = {}) {
 function openSettings() {
   $('settingsSheet').classList.remove('hidden'); $('sheetBackdrop').classList.remove('hidden');
   $('radiusRange').value = state.settings.radiusKm; $('radiusValue').textContent = state.settings.radiusKm;
-  $('onlyMineToggle').checked = state.settings.onlyMine; $('notificationsToggle').checked = state.settings.notifications;
+  $('onlyMineToggle').checked = state.settings.onlyMine; $('monitoringToggle').checked = state.settings.monitoring; $('notificationsToggle').checked = state.settings.notifications;
   setTimeout(() => $('localitySearch').focus(), 80);
 }
 function closeSettings() { $('settingsSheet').classList.add('hidden'); $('sheetBackdrop').classList.add('hidden'); }
@@ -239,10 +245,10 @@ function useGps({ setAsHome = false } = {}) {
     if (setAsHome) {
       try {
         const items = await searchPlaces(`${state.gps.lat},${state.gps.lon}`);
-        const p = items[0] || { name: 'GPS-точка', type: '', lat: state.gps.lat, lon: state.gps.lon, oblast: '', district: '', hromada: '' };
-        state.home = { ...p, lat: state.gps.lat, lon: state.gps.lon }; state.settings.home = state.home; saveSettings(); closeSettings(); await refreshThreats(); await syncPushSettings();
+        const p = items[0] || { name: 'GPS-точка', type: '', lat: state.gps.lat, lon: state.gps.lon, oblast: '', district: '', hromada: '', source: 'local-gps' };
+        state.home = p; state.settings.home = state.home; saveSettings(); closeSettings(); await refreshThreats(); await syncPushSettings();
       } catch {
-        state.home = { name: 'GPS-точка', type: '', lat: state.gps.lat, lon: state.gps.lon, oblast: '', district: '', hromada: '' }; state.settings.home = state.home; saveSettings(); closeSettings(); renderAll();
+        showToast('GPS визначено, але населений пункт не вдалося визначити. Спробуйте пошук за назвою.');
       }
     }
     setConnection('онлайн');
@@ -256,13 +262,19 @@ function urlBase64ToUint8Array(value) {
 }
 function pushPlace() {
   if (!state.home) return null;
-  return {
+  const place = {
     name: state.home.name || '',
     type: state.home.type || '',
     oblast: state.home.oblast || '',
     district: state.home.district || '',
     hromada: state.home.hromada || ''
   };
+  // Координати передаємо лише для центру населеного пункту з геокодера, не для точної GPS-точки.
+  if (state.home.source === 'OpenStreetMap/Nominatim' && Number.isFinite(state.home.lat) && Number.isFinite(state.home.lon)) {
+    place.lat = state.home.lat;
+    place.lon = state.home.lon;
+  }
+  return place;
 }
 async function currentPushSubscription() {
   if (!('serviceWorker' in navigator)) return null;
@@ -274,7 +286,7 @@ async function syncPushSettings({ quiet = true } = {}) {
   try {
     const subscription = await currentPushSubscription();
     if (!subscription) return;
-    await savePushSubscription(subscription.toJSON(), pushPlace(), state.settings.radiusKm);
+    await savePushSubscription(subscription.toJSON(), pushPlace(), state.settings.radiusKm, state.settings.monitoring);
     if (!quiet) showToast('Push-зону оновлено.');
   } catch (error) {
     console.warn('Push sync failed', error);
@@ -319,7 +331,7 @@ async function setNotifications(enabled) {
         applicationServerKey: urlBase64ToUint8Array(pushConfig.publicKey)
       });
     }
-    await savePushSubscription(subscription.toJSON(), pushPlace(), state.settings.radiusKm);
+    await savePushSubscription(subscription.toJSON(), pushPlace(), state.settings.radiusKm, state.settings.monitoring);
     state.settings.notifications = true;
     saveSettings();
     $('notificationsToggle').checked = true;
@@ -330,6 +342,59 @@ async function setNotifications(enabled) {
     saveSettings();
     $('notificationsToggle').checked = false;
     showToast(error.message || 'Не вдалося увімкнути push.');
+  }
+}
+
+function closeRealtime() {
+  clearTimeout(state.wsReconnectTimer);
+  state.wsReconnectTimer = null;
+  if (state.ws) {
+    state.ws.onclose = null;
+    try { state.ws.close(); } catch {}
+  }
+  state.ws = null;
+  state.wsConnected = false;
+}
+function scheduleRealtimeReconnect() {
+  clearTimeout(state.wsReconnectTimer);
+  if (!state.settings.monitoring || !config.enableRealtime || !apiReady() || !navigator.onLine) return;
+  state.wsReconnectTimer = setTimeout(connectRealtime, 4000);
+}
+function connectRealtime() {
+  closeRealtime();
+  if (!state.settings.monitoring || !config.enableRealtime || !apiReady() || !('WebSocket' in window)) return;
+  const url = streamUrl();
+  if (!url) return;
+  try {
+    const ws = new WebSocket(url);
+    state.ws = ws;
+    ws.addEventListener('open', () => {
+      state.wsConnected = true;
+      setConnection('онлайн · realtime');
+      $('modeBadge').textContent = 'RT';
+    });
+    ws.addEventListener('message', async (event) => {
+      let payload;
+      try { payload = JSON.parse(event.data); } catch { return; }
+      if (payload?.type !== 'event' || !payload.event) return;
+      const incoming = normalizeThreat(payload.event);
+      const previous = state.threats.find((item) => item.id === incoming.id);
+      state.threats = [incoming, ...state.threats.filter((item) => item.id !== incoming.id)];
+      if (!previous) await maybeNotifyNew([incoming]);
+      renderAll();
+      $('lastUpdated').textContent = `realtime ${new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
+    });
+    ws.addEventListener('close', () => {
+      if (state.ws !== ws) return;
+      state.ws = null;
+      state.wsConnected = false;
+      setConnection('онлайн · очікую realtime');
+      $('modeBadge').textContent = 'LIVE';
+      scheduleRealtimeReconnect();
+    });
+    ws.addEventListener('error', () => { try { ws.close(); } catch {} });
+  } catch {
+    scheduleRealtimeReconnect();
   }
 }
 function setupUI() {
@@ -343,17 +408,18 @@ function setupUI() {
   $('localitySearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') performPlaceSearch(); });
   let pushSyncTimer; $('radiusRange').addEventListener('input', (e) => { state.settings.radiusKm = Number(e.target.value); $('radiusValue').textContent = state.settings.radiusKm; saveSettings(); renderAll(); clearTimeout(pushSyncTimer); pushSyncTimer = setTimeout(() => syncPushSettings(), 700); });
   $('onlyMineToggle').addEventListener('change', (e) => { state.settings.onlyMine = e.target.checked; saveSettings(); renderAll(); });
+  $('monitoringToggle').addEventListener('change', (e) => { state.settings.monitoring = e.target.checked; saveSettings(); renderAll(); syncPushSettings(); if (state.settings.monitoring) connectRealtime(); else closeRealtime(); });
   $('notificationsToggle').addEventListener('change', (e) => setNotifications(e.target.checked));
   $('useGpsAsHomeBtn').addEventListener('click', () => useGps({ setAsHome: true })); $('locateBtn').addEventListener('click', () => useGps());
   $('refreshBtn').addEventListener('click', () => refreshThreats());
   $('panelToggle').addEventListener('click', () => { const panel = $('eventPanel'); const collapsed = panel.classList.toggle('collapsed'); $('panelToggle').setAttribute('aria-expanded', String(!collapsed)); $('panelToggle').querySelector('.chevron').textContent = collapsed ? '⌃' : '⌄'; });
   window.addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); state.installPrompt = event; });
   $('installBtn').addEventListener('click', async () => { if (!state.installPrompt) { showToast('На iPhone: Поділитися → На початковий екран.'); return; } state.installPrompt.prompt(); await state.installPrompt.userChoice; state.installPrompt = null; });
-  window.addEventListener('online', () => refreshThreats({ silent: true })); window.addEventListener('offline', () => setConnection('офлайн'));
+  window.addEventListener('online', () => { refreshThreats({ silent: true }); connectRealtime(); }); window.addEventListener('offline', () => { closeRealtime(); setConnection('офлайн'); });
 }
 async function registerServiceWorker() { if ('serviceWorker' in navigator) try { await navigator.serviceWorker.register('./sw.js', { scope: './' }); } catch (e) { console.warn(e); } }
 function startAutoRefresh() { clearInterval(state.refreshTimer); state.refreshTimer = setInterval(() => refreshThreats({ silent: true }), Math.max(10000, Number(config.refreshMs || 20000))); }
 
 state.home = state.settings.home;
-initMap(); setupUI(); registerServiceWorker().then(() => { if (state.settings.notifications) syncPushSettings(); }); renderHome(); refreshThreats(); startAutoRefresh();
+initMap(); setupUI(); registerServiceWorker().then(() => { if (state.settings.notifications) syncPushSettings(); }); renderHome(); refreshThreats(); startAutoRefresh(); connectRealtime();
 if (!state.home) setTimeout(openSettings, 450);

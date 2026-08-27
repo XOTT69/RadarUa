@@ -1,32 +1,50 @@
-# RadarUa v3 — персональна зона + background push
+# RadarUa — Final 1.0
 
-v3 містить усе з v2 та додає **фонові Web Push-сповіщення**, які можуть приходити після закриття PWA.
+Готовий PWA-проєкт для GitHub Pages + Cloudflare Worker. Основний сценарій — один раз вибрати **свій населений пункт** і отримувати статус офіційної тривоги та, за бажанням, моніторингові події у своєму радіусі.
 
-## Можливості
-- вибір і збереження населеного пункту;
-- адміністративна релевантність: область / район / громада / місто;
-- режим **«Тільки моя зона»** та радіус 5–100 км;
-- GPS без обов'язкового зберігання на сервері;
-- офіційні активні тривоги через alerts.in.ua;
-- PWA + service worker + offline shell;
-- Web Push через VAPID;
-- серверне зберігання push-підписок у Cloudflare KV;
-- cron раз на хвилину: push надсилається лише коли стан конкретної зони змінився **inactive → active** або **active → inactive**;
-- автоматичне видалення протермінованих push-підписок (HTTP 404/410);
-- опціональний normalized monitoring feed для грубих публічних повідомлень по населеному пункту/громаді/району/області.
+> **Важливо:** RadarUa — інформаційний сервіс і не замінює офіційні сирени, застосунок «Повітряна тривога», повідомлення органів влади чи правила перебування в укритті. Моніторингові точки — центр згаданої місцевості, а не підтверджена позиція ракети/БПЛА.
 
-## Безпека даних
-Для background push Worker навмисно зберігає лише `name`, `oblast`, `district`, `hromada` та push subscription. GPS-координати домашньої точки в push-сховище не записуються.
+## Що є у фінальній версії
 
-## Важливе обмеження
-Карта показує адміністративні статуси та грубі інформаційні події. Вона **не відображає точні live-координати або траєкторії повітряних цілей** і не замінює офіційні системи оповіщення.
+- PWA для iOS/Android/desktop і GitHub Pages.
+- Пошук міста, села або селища по Україні.
+- Визначення населеного пункту через GPS.
+- Збереження вибраного населеного пункту локально на пристрої.
+- Визначення релевантної офіційної тривоги за областю / районом / громадою / містом.
+- Режим **«Показувати тільки мою зону»**.
+- Радіус моніторингових подій 5–100 км.
+- Карта, фільтри БПЛА / ракети / авіація / тривоги.
+- Cloudflare Worker як backend-проксі для секретного токена `alerts.in.ua`.
+- Realtime WebSocket через Durable Object.
+- Web Push: початок/відбій офіційної тривоги та релевантні моніторингові події.
+- Захищений ingest endpoint для дозволених моніторингових джерел.
+- Опціональний Telegram bridge на Telethon.
+- Кешування Nominatim і обмеження частоти геокодування.
+- Leaflet 1.9.4 зафіксований через конкретну версію + SRI.
 
-# Розгортання
+## Структура
 
-## 1. Токен alerts.in.ua
-Отримайте персональний API token: https://devs.alerts.in.ua/
+```text
+.
+├── index.html
+├── app.js
+├── config.js
+├── styles.css
+├── manifest.webmanifest
+├── sw.js
+├── data/feed.js
+├── assets/icons/
+├── worker/                 # Cloudflare API, realtime, push
+├── telegram-bridge/        # опціональний Telegram ingest
+└── .github/workflows/      # GitHub Pages + Worker deploy
+```
 
-## 2. Cloudflare KV
+## 1. Отримайте токен alerts.in.ua
+
+Потрібен персональний API token `alerts.in.ua`. Він зберігається **тільки** як Cloudflare secret і не потрапляє у frontend.
+
+## 2. Розгорніть Cloudflare Worker
+
 ```bash
 cd worker
 npm install
@@ -34,96 +52,91 @@ npx wrangler login
 npx wrangler kv namespace create SUBSCRIPTIONS
 ```
 
-Команда поверне `id`. Вставте його в `worker/wrangler.toml` замість `REPLACE_WITH_KV_ID`.
+Вставте отриманий KV `id` у `worker/wrangler.toml` замість `REPLACE_WITH_KV_ID`.
 
-## 3. VAPID ключі
+Згенеруйте VAPID keys:
+
 ```bash
-npx web-push generate-vapid-keys
+npm run vapid
 ```
 
-Потім збережіть секрети:
+Додайте secrets:
+
 ```bash
 npx wrangler secret put ALERTS_TOKEN
+npx wrangler secret put INGEST_TOKEN
 npx wrangler secret put VAPID_PUBLIC_KEY
 npx wrangler secret put VAPID_PRIVATE_KEY
 npx wrangler secret put VAPID_SUBJECT
 ```
 
-`VAPID_SUBJECT` — наприклад `mailto:you@example.com`.
+`INGEST_TOKEN` — довгий випадковий секрет для прийому моніторингових подій. `VAPID_SUBJECT` — контактний `mailto:` або HTTPS URL.
 
-## 4. Deploy Worker
+Deploy:
+
 ```bash
 npm run deploy
 ```
 
 Перевірка:
+
 ```bash
 curl https://YOUR-WORKER.workers.dev/health
 ```
 
-Очікується `pushConfigured: true` та `alertsTokenConfigured: true`.
+## 3. Підключіть frontend до Worker
 
-## 5. Frontend
-Впишіть URL Worker у кореневий `config.js`:
+У кореневому `config.js` вставте URL Worker:
+
 ```js
-window.RADAR_CONFIG = {
-  version: '3.0.0',
-  mode: 'api',
-  apiBaseUrl: 'https://YOUR-WORKER.workers.dev',
-  refreshMs: 15000,
-  defaultRadiusKm: 25,
-  maxRadiusKm: 100,
-  defaultOnlyMyArea: true,
-  enableBrowserNotifications: true,
-  enableBackgroundPush: true
-};
+apiBaseUrl: 'https://YOUR-WORKER.workers.dev',
 ```
 
-## 6. GitHub Pages
-**Settings → Pages → Source: GitHub Actions**. Workflow `.github/workflows/pages.yml` уже є.
+Для production також змініть у `worker/wrangler.toml`:
 
-На iPhone встановіть PWA через Safari: **Поділитися → На початковий екран**, потім відкрийте встановлений RadarUa і дозвольте push.
-
-# Опціональний monitoring feed
-
-Worker підтримує `MONITOR_FEED_URL`. Це має бути ваш або дозволений сторонній JSON endpoint. Формат:
-```json
-{
-  "items": [
-    {
-      "id": "event-123",
-      "type": "drone",
-      "title": "Моніторингове повідомлення",
-      "detail": "Повідомлення стосується громади",
-      "locality": "Назва населеного пункту",
-      "hromada": "Назва громади",
-      "district": "Назва району",
-      "oblast": "Назва області",
-      "timestamp": "2026-08-27T20:00:00Z",
-      "source": "назва джерела"
-    }
-  ]
-}
+```toml
+ALLOWED_ORIGIN = "https://XOTT69.github.io"
 ```
 
-Навмисно не передбачений контракт для точних live-координат цілей. Події відображаються як грубий статус адміністративної зони.
+Якщо GitHub Pages використовує project URL, браузерний `Origin` усе одно буде `https://XOTT69.github.io`.
 
-Secrets/vars:
+## 4. GitHub Pages
+
+Завантажте вміст цієї папки в корінь репозиторію `XOTT69/RadarUa` і зробіть commit у `main`.
+
+Далі: **Settings → Pages → Source → GitHub Actions**. Workflow `.github/workflows/pages.yml` публікує тільки frontend-файли; backend, bridge і secrets у Pages artifact не потрапляють.
+
+## 5. Свій населений пункт
+
+Після відкриття PWA:
+
+1. Введіть, наприклад, `Чабани`.
+2. Оберіть правильний населений пункт зі списку.
+3. Задайте радіус, наприклад 25 км.
+4. Залиште увімкненим «Показувати тільки мою зону».
+5. За бажанням увімкніть моніторинг і Push.
+
+GPS потрібен лише для визначення населеного пункту. Для push backend отримує адміністративний вибір; точна GPS-позиція не зберігається як live location.
+
+## 6. Моніторингові джерела
+
+`telegram-bridge/` є опціональним. Використовуйте лише публічні/дозволені канали, умови яких дозволяють автоматизоване читання/повторне використання. Bridge передає **назву згаданої місцевості**, а Worker сам геокодує її до центра населеного пункту.
+
+Деталі: `telegram-bridge/README.md`.
+
+## Перевірки
+
 ```bash
-npx wrangler secret put MONITOR_FEED_URL
-# якщо потрібна авторизація:
-npx wrangler secret put MONITOR_FEED_TOKEN
+node --check app.js
+node --check data/feed.js
+node --check worker/src/index.js
+cd telegram-bridge && python -m unittest -v test_parser.py
 ```
 
-# Локальний запуск
-Frontend:
+Для локального frontend:
+
 ```bash
 python3 -m http.server 8080
 ```
-Worker:
-```bash
-cd worker
-cp .dev.vars.example .dev.vars
-npm install
-npm run dev
-```
+
+Потім відкрийте `http://localhost:8080`.

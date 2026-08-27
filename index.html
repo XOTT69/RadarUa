@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1018" />
+  <meta name="description" content="RadarUa — PWA для офіційних тривог і моніторингових подій з фокусом на ваш населений пункт." />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="RadarUa" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./assets/icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./assets/icons/icon-192.png" />
+  <link rel="preconnect" href="https://unpkg.com" crossorigin />
+  <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="./styles.css" />
+  <title>RadarUa</title>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <button id="homeAreaBtn" class="brand" type="button" aria-label="Обрати свій населений пункт">
+        <div class="brand-mark" aria-hidden="true"><span></span></div>
+        <div class="brand-copy">
+          <strong>RadarUa <em>FINAL</em></strong>
+          <small id="connectionLabel">підключення…</small>
+        </div>
+      </button>
+      <div class="top-actions">
+        <button id="installBtn" class="icon-btn" type="button" aria-label="Встановити PWA">＋</button>
+        <button id="settingsBtn" class="icon-btn" type="button" aria-label="Налаштування">⚙</button>
+        <button id="locateBtn" class="icon-btn" type="button" aria-label="Моя GPS-геолокація">◎</button>
+      </div>
+    </header>
+
+    <section class="warning" role="status">
+      <span class="warning-dot"></span>
+      <div>
+        <strong>Інформаційний сервіс</strong>
+        <span>Не замінює офіційні сигнали тривоги та вказівки органів влади.</span>
+      </div>
+      <span id="modeBadge" class="badge">SETUP</span>
+    </section>
+
+    <main class="map-shell">
+      <div id="map" aria-label="Карта повітряних загроз"></div>
+
+      <section id="localityCard" class="locality-card">
+        <div class="locality-status-dot" id="localityStatusDot"></div>
+        <div class="locality-copy">
+          <span class="eyebrow">Мій населений пункт</span>
+          <strong id="localityName">Не вибрано</strong>
+          <small id="localityStatus">Натисніть, щоб обрати</small>
+        </div>
+        <button id="changeLocalityBtn" class="small-btn" type="button">Змінити</button>
+      </section>
+
+      <div class="filters" aria-label="Фільтри загроз">
+        <button class="filter active" data-type="all" type="button">Усі <b id="countAll">0</b></button>
+        <button class="filter" data-type="alert" type="button">Тривоги <b id="countAlert">0</b></button>
+        <button class="filter" data-type="drone" type="button">БПЛА <b id="countDrone">0</b></button>
+        <button class="filter" data-type="missile" type="button">Ракети <b id="countMissile">0</b></button>
+        <button class="filter" data-type="aviation" type="button">Авіація <b id="countAviation">0</b></button>
+      </div>
+
+      <button id="panelToggle" class="panel-toggle" type="button" aria-expanded="true">
+        <span>Події</span><b id="eventCount">0</b><span class="chevron">⌄</span>
+      </button>
+
+      <section id="eventPanel" class="event-panel" aria-label="Останні події">
+        <div class="panel-head">
+          <div>
+            <strong id="eventPanelTitle">Останні події</strong>
+            <small id="lastUpdated">ще не оновлювалося</small>
+          </div>
+          <button id="refreshBtn" class="text-btn" type="button">Оновити</button>
+        </div>
+        <div id="eventList" class="event-list"></div>
+      </section>
+
+      <section id="proximityCard" class="proximity-card hidden" aria-live="polite">
+        <div class="proximity-icon">◎</div>
+        <div>
+          <strong id="proximityTitle">Статус поруч</strong>
+          <span id="proximityText"></span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="sheetBackdrop" class="sheet-backdrop hidden"></div>
+  <section id="settingsSheet" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div><span class="eyebrow">RadarUa</span><h2 id="settingsTitle">Мій населений пункт</h2></div>
+      <button id="closeSettingsBtn" class="icon-btn" type="button" aria-label="Закрити">×</button>
+    </div>
+
+    <label class="field-label" for="localitySearch">Пошук міста / села / селища</label>
+    <div class="search-row">
+      <input id="localitySearch" class="text-input" type="search" autocomplete="off" placeholder="Наприклад: Чабани" />
+      <button id="searchLocalityBtn" class="primary-btn" type="button">Знайти</button>
+    </div>
+    <div id="searchStatus" class="hint">Вибір зберігається на цьому пристрої. Точний GPS постійно на сервер не передається.</div>
+    <div id="searchResults" class="search-results"></div>
+
+    <div class="setting-row">
+      <div><strong>Радіус моніторингу</strong><small>Для приблизних подій, прив'язаних до населених пунктів</small></div>
+      <div class="range-value"><b id="radiusValue">25</b> км</div>
+    </div>
+    <input id="radiusRange" class="range" type="range" min="5" max="100" step="5" value="25" />
+
+    <label class="toggle-row">
+      <div><strong>Показувати тільки мою зону</strong><small>Область / район / громада + вибраний радіус</small></div>
+      <input id="onlyMineToggle" type="checkbox" />
+      <span class="switch"></span>
+    </label>
+
+    <label class="toggle-row">
+      <div><strong>Моніторингові повідомлення</strong><small>Неофіційні публічні/дозволені джерела; координати — лише центр згаданої місцевості</small></div>
+      <input id="monitoringToggle" type="checkbox" />
+      <span class="switch"></span>
+    </label>
+
+    <label class="toggle-row">
+      <div><strong>Push-сповіщення</strong><small>Початок/відбій офіційної тривоги та релевантні моніторингові події</small></div>
+      <input id="notificationsToggle" type="checkbox" />
+      <span class="switch"></span>
+    </label>
+
+    <button id="useGpsAsHomeBtn" class="secondary-btn full" type="button">◎ Визначити населений пункт через GPS</button>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="./config.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
