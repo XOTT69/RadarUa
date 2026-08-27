@@ -21,10 +21,10 @@ INGEST_TOKEN = os.environ["RADAR_INGEST_TOKEN"]
 TTL_MINUTES = int(os.getenv("EVENT_TTL_MINUTES", "120"))
 
 if not CHANNELS:
-    raise RuntimeError("TG_CHANNELS is empty. Add public channel usernames/IDs explicitly.")
+    raise RuntimeError("TG_CHANNELS is empty. Add only public/authorized channel usernames or IDs explicitly.")
 
 client = TelegramClient(SESSION, API_ID, API_HASH)
-http = httpx.AsyncClient(timeout=12.0, headers={"User-Agent": "RadarUa-Telegram-Bridge/3.0"})
+http = httpx.AsyncClient(timeout=12.0, headers={"User-Agent": "RadarUa-Telegram-Bridge/1.0"})
 
 
 def source_name(event: Any) -> str:
@@ -34,21 +34,6 @@ def source_name(event: Any) -> str:
     username = getattr(chat, "username", None)
     title = getattr(chat, "title", None)
     return f"telegram:@{username}" if username else f"telegram:{title or event.chat_id}"
-
-
-async def best_place(location: str):
-    try:
-        response = await http.get(f"{RADAR_API_URL}/api/places", params={"q": location})
-        response.raise_for_status()
-        items = response.json().get("items", [])
-        if not items:
-            return None
-        target = location.casefold().strip()
-        exact = [p for p in items if str(p.get("name", "")).casefold().strip() == target]
-        return (exact or items)[0]
-    except Exception as exc:
-        log.warning("Geocoding failed for %r: %s", location, exc)
-        return None
 
 
 async def post_event(payload: dict):
@@ -66,46 +51,35 @@ async def post_event(payload: dict):
 async def on_message(event):
     text = event.raw_text or ""
     parsed = parse_message(text)
-    if not parsed:
+    if not parsed or not parsed.location:
         return
 
-    place = await best_place(parsed.location) if parsed.location else None
     timestamp = event.message.date
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
 
+    # Передаємо лише назву згаданої/цільової місцевості. Worker сам геокодує її
+    # до центру населеного пункту і навмисно не приймає live-координати цілі.
     payload = {
         "id": f"tg-{event.chat_id}-{event.message.id}",
         "type": parsed.type,
         "title": parsed.title,
         "detail": parsed.detail,
         "location": parsed.location,
-        "course": parsed.course,
-        "confidence": "medium" if place else parsed.confidence,
+        "course": None,
+        "confidence": parsed.confidence,
         "source": source_name(event),
         "timestamp": timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "ttlMinutes": TTL_MINUTES,
         "meta": {
-            "monitoring": True,
-            "telegramChatId": str(event.chat_id),
-            "telegramMessageId": event.message.id,
-            "count": parsed.count,
-            "parser": "radarua-v3",
-            "locationInterpretation": "named_or_destination_location_not_confirmed_target_position",
+            "sourceMessageId": f"{event.chat_id}:{event.message.id}",
+            "locationInterpretation": "named_or_destination_locality_not_confirmed_target_position",
         },
     }
-    if place:
-        payload.update({"lat": place["lat"], "lon": place["lon"]})
-        payload["meta"].update({
-            "geocodedPlace": place.get("name"),
-            "oblast": place.get("oblast", ""),
-            "district": place.get("district", ""),
-            "hromada": place.get("hromada", ""),
-        })
 
     try:
         result = await post_event(payload)
-        log.info("Ingested %s %s (%s)", parsed.type, parsed.location or "without location", result.get("event", {}).get("id"))
+        log.info("Ingested %s -> %s (%s)", parsed.type, parsed.location, result.get("event", {}).get("id"))
     except Exception:
         log.exception("Failed to ingest Telegram message %s/%s", event.chat_id, event.message.id)
 

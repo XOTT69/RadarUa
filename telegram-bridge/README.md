@@ -1,17 +1,54 @@
-# Telegram monitoring bridge
+# Telegram bridge — RadarUa Final 1.0
 
-Окремий процес, який читає **тільки явно вказані вами Telegram-джерела** через Telegram MTProto/Telethon, витягує з нових повідомлень тип загрози та згадану локацію і передає нормалізовану подію у RadarUa Worker.
+Опціональний bridge читає **лише явно перелічені публічні/дозволені Telegram-канали**, знаходить повідомлення з типом загрози та назвою місцевості й надсилає нормалізовану подію у RadarUa Worker.
 
-## Принцип точності
-Парсер не називає геокодовану точку «координатою цілі». Якщо джерело пише «БПЛА курсом на Васильків», координата на карті — це Васильків як **згадана/цільова локація повідомлення**. У metadata записується `locationInterpretation`.
+Він не надсилає live-координати або вектор руху. Backend геокодує лише назву згаданої/цільової місцевості до її центра.
 
-## Налаштування
-1. Створіть Telegram API ID/hash на офіційному Telegram developer portal для свого акаунта.
-2. `python -m venv .venv && source .venv/bin/activate`
-3. `pip install -r requirements.txt`
-4. Встановіть змінні з `.env.example` у shell/хостингу.
-5. На першому запуску Telethon попросить авторизацію акаунта й збереже session-файл. Не комітьте session у GitHub.
-6. Запустіть `python bridge.py`.
+## 1. Telegram API credentials
 
-## Важливо
-Переконайтеся, що правила кожного підключеного каналу та Telegram дозволяють ваш спосіб використання. Не додавайте RadarUA як джерело без їхнього дозволу на автоматизований збір.
+Створіть `api_id` / `api_hash` для власного Telegram client за офіційною процедурою Telegram. Не публікуйте `api_hash` та session-файл.
+
+## 2. Налаштування
+
+```bash
+cp .env.example .env
+```
+
+Заповніть:
+
+```env
+TG_API_ID=123456
+TG_API_HASH=...
+TG_SESSION=radarua
+TG_CHANNELS=@public_channel_1,@public_channel_2
+RADAR_API_URL=https://YOUR-WORKER.workers.dev
+RADAR_INGEST_TOKEN=...
+EVENT_TTL_MINUTES=120
+```
+
+Використовуйте лише джерела, для яких у вас є право/дозвіл на автоматизоване читання та повторне використання даних.
+
+## 3. Запуск без Docker
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python bridge.py
+```
+
+Перший запуск Telethon попросить авторизувати Telegram-акаунт і створить session-файл. Він у `.gitignore`.
+
+## Docker
+
+```bash
+mkdir -p sessions
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d --build
+```
+
+## Parser tests
+
+```bash
+python -m unittest -v test_parser.py
+```
