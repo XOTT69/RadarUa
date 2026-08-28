@@ -1,6 +1,6 @@
 window.RADAR_CONFIG = {
-  version: '1.0.0',
-  mode: 'api',
+  version: '2.0.0',
+  mode: 'telegram',
   // Вставте URL Cloudflare Worker після deploy, без / в кінці.
   // Приклад: 'https://radarua-api.YOUR-SUBDOMAIN.workers.dev'
   apiBaseUrl: '',

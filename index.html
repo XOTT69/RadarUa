@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b1018" />
-  <meta name="description" content="RadarUa — PWA для офіційних тривог і моніторингових подій з фокусом на ваш населений пункт." />
+  <meta name="description" content="RadarUa — PWA для near-realtime Telegram-моніторингу з фокусом на ваш населений пункт." />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="RadarUa" />
@@ -24,7 +24,7 @@
       <button id="homeAreaBtn" class="brand" type="button" aria-label="Обрати свій населений пункт">
         <div class="brand-mark" aria-hidden="true"><span></span></div>
         <div class="brand-copy">
-          <strong>RadarUa <em>FINAL</em></strong>
+          <strong>RadarUa <em>ONLINE</em></strong>
           <small id="connectionLabel">підключення…</small>
         </div>
       </button>
@@ -38,8 +38,8 @@
     <section class="warning" role="status">
       <span class="warning-dot"></span>
       <div>
-        <strong>Інформаційний сервіс</strong>
-        <span>Не замінює офіційні сигнали тривоги та вказівки органів влади.</span>
+        <strong>Telegram-моніторинг · неофіційні дані</strong>
+        <span>Не замінює офіційні сигнали тривоги. Точки — згадані місцевості, а не координати цілей.</span>
       </div>
       <span id="modeBadge" class="badge">SETUP</span>
     </section>
@@ -59,10 +59,12 @@
 
       <div class="filters" aria-label="Фільтри загроз">
         <button class="filter active" data-type="all" type="button">Усі <b id="countAll">0</b></button>
-        <button class="filter" data-type="alert" type="button">Тривоги <b id="countAlert">0</b></button>
         <button class="filter" data-type="drone" type="button">БПЛА <b id="countDrone">0</b></button>
         <button class="filter" data-type="missile" type="button">Ракети <b id="countMissile">0</b></button>
+        <button class="filter" data-type="kab" type="button">КАБ <b id="countKab">0</b></button>
         <button class="filter" data-type="aviation" type="button">Авіація <b id="countAviation">0</b></button>
+        <button class="filter" data-type="explosion" type="button">Вибухи/ППО <b id="countExplosion">0</b></button>
+        <button class="filter" data-type="clear" type="button">Відбій <b id="countClear">0</b></button>
       </div>
 
       <button id="panelToggle" class="panel-toggle" type="button" aria-expanded="true">
@@ -103,7 +105,7 @@
       <input id="localitySearch" class="text-input" type="search" autocomplete="off" placeholder="Наприклад: Чабани" />
       <button id="searchLocalityBtn" class="primary-btn" type="button">Знайти</button>
     </div>
-    <div id="searchStatus" class="hint">Вибір зберігається на цьому пристрої. Точний GPS постійно на сервер не передається.</div>
+    <div id="searchStatus" class="hint">Вибір зберігається на цьому пристрої. Пошук виконується лише після «Знайти» / Enter через OpenStreetMap Nominatim; точний GPS постійно не передається.</div>
     <div id="searchResults" class="search-results"></div>
 
     <div class="setting-row">
@@ -113,19 +115,19 @@
     <input id="radiusRange" class="range" type="range" min="5" max="100" step="5" value="25" />
 
     <label class="toggle-row">
-      <div><strong>Показувати тільки мою зону</strong><small>Область / район / громада + вибраний радіус</small></div>
+      <div><strong>Показувати тільки мою зону</strong><small>Згадані населені пункти в межах вибраного радіуса</small></div>
       <input id="onlyMineToggle" type="checkbox" />
       <span class="switch"></span>
     </label>
 
     <label class="toggle-row">
-      <div><strong>Моніторингові повідомлення</strong><small>Неофіційні публічні/дозволені джерела; координати — лише центр згаданої місцевості</small></div>
+      <div><strong>Моніторингові повідомлення</strong><small>Near-realtime з явно налаштованих Telegram-каналів; точка — лише центр згаданої місцевості</small></div>
       <input id="monitoringToggle" type="checkbox" />
       <span class="switch"></span>
     </label>
 
     <label class="toggle-row">
-      <div><strong>Push-сповіщення</strong><small>Початок/відбій офіційної тривоги та релевантні моніторингові події</small></div>
+      <div><strong>Push-сповіщення</strong><small>Релевантні Telegram-події для вибраного населеного пункту/радіуса</small></div>
       <input id="notificationsToggle" type="checkbox" />
       <span class="switch"></span>
     </label>

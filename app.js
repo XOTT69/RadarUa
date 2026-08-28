@@ -1,38 +1,27 @@
 import { apiReady, loadThreats, searchPlaces, streamUrl, normalizeThreat, getPushConfig, savePushSubscription, deletePushSubscription } from './data/feed.js';
 
 const config = window.RADAR_CONFIG || {};
-const STORAGE_KEY = 'radarua.settings.v1';
+const STORAGE_KEY = 'radarua.settings.v2';
+const $ = (id) => document.getElementById(id);
 const state = {
-  map: null,
-  threats: [],
-  markers: new Map(),
-  filter: 'all',
-  home: null,
-  gps: null,
-  homeMarker: null,
-  homeRadius: null,
-  gpsMarker: null,
-  installPrompt: null,
-  refreshTimer: null,
-  ws: null,
-  wsReconnectTimer: null,
-  wsConnected: false,
-  localityStatus: null,
-  settings: loadSettings(),
-  knownIds: new Set()
+  map: null, threats: [], markers: new Map(), filter: 'all', home: null, gps: null,
+  homeMarker: null, homeRadius: null, gpsMarker: null, installPrompt: null,
+  refreshTimer: null, ws: null, wsReconnectTimer: null, wsConnected: false,
+  monitoringStatus: null, settings: loadSettings(), knownIds: new Set(), initialized: false
 };
 
 const typeMeta = {
   drone: { label: 'БПЛА', symbol: '◆' },
   missile: { label: 'Ракета', symbol: '➤' },
+  kab: { label: 'КАБ', symbol: '▼' },
   aviation: { label: 'Авіація', symbol: '✦' },
-  alert: { label: 'Тривога', symbol: '!' }
+  explosion: { label: 'Вибухи / ППО', symbol: '●' },
+  clear: { label: 'Відбій', symbol: '✓' }
 };
-const $ = (id) => document.getElementById(id);
 
 function loadSettings() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem('radarua.settings.v1') || '{}');
     return {
       radiusKm: Number(saved.radiusKm || config.defaultRadiusKm || 25),
       onlyMine: saved.onlyMine ?? Boolean(config.defaultOnlyMyArea),
@@ -49,7 +38,7 @@ function saveSettings() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.settings));
 }
 function normalizeText(v) {
-  return String(v || '').toLocaleLowerCase('uk-UA').replace(/[’']/g, "'").replace(/\s+/g, ' ').trim();
+  return String(v || '').toLocaleLowerCase('uk-UA').replace(/[’']/g, "'").replace(/[^\p{L}\p{N}\s'-]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 function initMap() {
   state.map = L.map('map', { zoomControl: false, attributionControl: true, minZoom: 5, maxZoom: 16 }).setView([49.0, 31.3], 6);
@@ -57,14 +46,17 @@ function initMap() {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(state.map);
 }
 function escapeHtml(value) {
-  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+  return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
 }
 function formatAge(timestamp) {
-  const sec = Math.max(0, Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000));
+  const ms = Date.now() - new Date(timestamp).getTime();
+  if (!Number.isFinite(ms)) return 'час невідомий';
+  const sec = Math.max(0, Math.floor(ms / 1000));
   if (sec < 60) return `${sec} с тому`;
   const min = Math.floor(sec / 60);
   if (min < 60) return `${min} хв тому`;
-  return `${Math.floor(min / 60)} год тому`;
+  const hr = Math.floor(min / 60);
+  return hr < 24 ? `${hr} год тому` : `${Math.floor(hr / 24)} д тому`;
 }
 function haversineKm(lat1, lon1, lat2, lon2) {
   const r = 6371, toRad = (x) => x * Math.PI / 180;
@@ -73,22 +65,51 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return 2 * r * Math.asin(Math.sqrt(a));
 }
 function markerIcon(threat) {
-  const meta = typeMeta[threat.type] || typeMeta.alert;
-  const rotation = threat.course == null ? '' : `transform:rotate(${threat.course}deg)`;
-  return L.divIcon({ className: 'threat-marker-wrap', html: `<div class="threat-marker threat-${threat.type}"><span style="${rotation}">${meta.symbol}</span></div>`, iconSize: [42, 42], iconAnchor: [21, 21] });
+  const meta = typeMeta[threat.type] || typeMeta.explosion;
+  return L.divIcon({ className: 'threat-marker-wrap', html: `<div class="threat-marker threat-${threat.type}"><span>${meta.symbol}</span></div>`, iconSize: [42, 42], iconAnchor: [21, 21] });
+}
+function textMatchesHome(threat) {
+  if (!state.home) return true;
+  const hay = normalizeText([
+    threat.meta?.location, threat.meta?.geocodedPlace?.name, threat.meta?.geocodedPlace?.hromada,
+    threat.meta?.geocodedPlace?.district, threat.meta?.geocodedPlace?.oblast, threat.title, threat.detail
+  ].filter(Boolean).join(' '));
+  return [state.home.name, state.home.hromada, state.home.district, state.home.oblast]
+    .filter(Boolean).map(normalizeText).some((needle) => needle && hay.includes(needle));
+}
+function sameish(a, b) {
+  const clean = (v) => normalizeText(v).replace(/\b(?:область|район|громада|територіальна|міська|селищна|сільська)\b/gu, '').replace(/\s+/g, ' ').trim();
+  const x = clean(a), y = clean(b);
+  return Boolean(x && y && (x === y || (x.length >= 4 && y.length >= 4 && (x.includes(y) || y.includes(x)))));
 }
 function isThreatRelevant(threat) {
   if (!state.home) return true;
-  if (threat.meta?.appliesToLocality === true) return true;
-  if (threat.meta?.approximatePoint && threat.meta?.appliesToLocality !== true) return false;
-  if (threat.lat != null && threat.lon != null) {
+  if (threat.meta?.locationScope === 'region' && threat.meta?.oblast) return sameish(threat.meta.oblast, state.home.oblast);
+  if (threat.lat != null && threat.lon != null && Number.isFinite(state.home.lat) && Number.isFinite(state.home.lon)) {
     return haversineKm(state.home.lat, state.home.lon, threat.lat, threat.lon) <= state.settings.radiusKm;
   }
-  const hay = normalizeText([threat.title, threat.detail, threat.meta?.region, threat.meta?.raion, threat.meta?.hromada].filter(Boolean).join(' '));
-  return [state.home.name, state.home.oblast, state.home.district, state.home.hromada].filter(Boolean).some((x) => hay.includes(normalizeText(x)));
+  return textMatchesHome(threat);
 }
 function visibleThreats() {
-  return state.threats.filter((t) => (!t.meta?.monitoring || state.settings.monitoring) && (state.filter === 'all' || t.type === state.filter) && (!state.settings.onlyMine || isThreatRelevant(t)));
+  if (!state.settings.monitoring) return [];
+  return state.threats.filter((t) => (state.filter === 'all' || t.type === state.filter) && (!state.settings.onlyMine || isThreatRelevant(t)));
+}
+function feedStateText() {
+  const s = state.monitoringStatus;
+  if (!s) return 'стан Telegram ще не отримано';
+  if (s.state === 'online') return `Telegram онлайн · ${s.channelCount || 0} джерел`;
+  if (s.state === 'stale') return `Telegram давно не оновлювався · ${s.lastHeartbeatAt ? formatAge(s.lastHeartbeatAt) : ''}`;
+  return 'Telegram-потік офлайн або ще не запущений';
+}
+function renderFeedHealth() {
+  const s = state.monitoringStatus;
+  const badge = $('modeBadge');
+  if (!apiReady()) {
+    badge.textContent = 'SETUP'; badge.className = 'badge warning-badge'; return;
+  }
+  if (s?.state === 'online') { badge.textContent = state.wsConnected ? 'TG RT' : 'TG'; badge.className = 'badge'; }
+  else if (s?.state === 'stale') { badge.textContent = 'STALE'; badge.className = 'badge warning-badge'; }
+  else { badge.textContent = 'OFF'; badge.className = 'badge danger-badge'; }
 }
 function renderHome() {
   state.home = state.settings.home || state.home;
@@ -100,16 +121,20 @@ function renderHome() {
     state.homeMarker?.remove(); state.homeRadius?.remove();
     return;
   }
-  const status = state.localityStatus;
-  if (status?.active) {
-    $('localityStatus').textContent = status.label || 'Активна повітряна тривога';
-    $('localityStatusDot').className = 'locality-status-dot danger';
-  } else if (status) {
-    $('localityStatus').textContent = 'Зараз активної тривоги для цієї зони не знайдено';
-    $('localityStatusDot').className = 'locality-status-dot safe';
-  } else {
-    $('localityStatus').textContent = [home.hromada, home.district, home.oblast].filter(Boolean).join(' · ') || 'Збережено';
+  const localCount = state.settings.monitoring ? state.threats.filter(isThreatRelevant).length : 0;
+  const s = state.monitoringStatus;
+  if (!state.settings.monitoring) {
+    $('localityStatus').textContent = 'Telegram-моніторинг вимкнений у налаштуваннях';
     $('localityStatusDot').className = 'locality-status-dot';
+  } else if (s?.state === 'online') {
+    $('localityStatus').textContent = localCount ? `${localCount} свіжих подій у радіусі ${state.settings.radiusKm} км · Telegram онлайн` : `Свіжих повідомлень у радіусі ${state.settings.radiusKm} км не знайдено · це не означає «безпечно»`;
+    $('localityStatusDot').className = 'locality-status-dot online';
+  } else if (s?.state === 'stale') {
+    $('localityStatus').textContent = `Дані застаріли · останній heartbeat ${s.lastHeartbeatAt ? formatAge(s.lastHeartbeatAt) : 'невідомо коли'}`;
+    $('localityStatusDot').className = 'locality-status-dot stale';
+  } else {
+    $('localityStatus').textContent = s ? 'Telegram-потік недоступний — дані можуть бути неповними' : ([home.hromada, home.district, home.oblast].filter(Boolean).join(' · ') || 'Збережено');
+    $('localityStatusDot').className = s ? 'locality-status-dot danger' : 'locality-status-dot';
   }
   if (Number.isFinite(home.lat) && Number.isFinite(home.lon)) {
     state.homeMarker?.remove(); state.homeRadius?.remove();
@@ -117,41 +142,46 @@ function renderHome() {
     state.homeRadius = L.circle([home.lat, home.lon], { radius: state.settings.radiusKm * 1000, weight: 1, opacity: .8, fillOpacity: .05, className: 'home-radius' }).addTo(state.map);
   }
 }
+function sourceLine(threat) {
+  const count = Number(threat.meta?.sourceCount || 1);
+  const confirmed = threat.meta?.corroborated ? ` · підтверджено ${count} джерелами` : '';
+  return `${threat.source}${confirmed}`;
+}
 function renderMarkers() {
   for (const marker of state.markers.values()) marker.remove();
   state.markers.clear();
   for (const threat of visibleThreats()) {
     if (threat.lat == null || threat.lon == null) continue;
     const marker = L.marker([threat.lat, threat.lon], { icon: markerIcon(threat) }).addTo(state.map);
-    marker.bindPopup(`<div class="popup"><strong>${escapeHtml(threat.title)}</strong><p>${escapeHtml(threat.detail)}</p><small>${escapeHtml(threat.source)} · ${formatAge(threat.timestamp)}</small></div>`);
+    const approx = threat.meta?.approximatePoint ? '<p><b>Приблизна прив’язка:</b> центр згаданого населеного пункту, не координата цілі.</p>' : '';
+    const sourceUrl = /^https:\/\/t\.me\//.test(threat.meta?.sourceUrl || '') ? `<a href="${escapeHtml(threat.meta.sourceUrl)}" target="_blank" rel="noopener noreferrer">джерело</a>` : escapeHtml(threat.source);
+    marker.bindPopup(`<div class="popup"><strong>${escapeHtml(threat.title)}</strong><p>${escapeHtml(threat.detail)}</p>${approx}<small>${sourceUrl} · ${formatAge(threat.timestamp)}</small></div>`);
     state.markers.set(threat.id, marker);
   }
 }
 function renderCounts() {
-  const enabled = state.threats.filter((t) => !t.meta?.monitoring || state.settings.monitoring);
+  const enabled = state.settings.monitoring ? state.threats : [];
   const pool = state.settings.onlyMine ? enabled.filter(isThreatRelevant) : enabled;
-  const counts = { drone: 0, missile: 0, aviation: 0, alert: 0 };
-  for (const t of pool) counts[t.type] = (counts[t.type] || 0) + 1;
+  const counts = { drone: 0, missile: 0, kab: 0, aviation: 0, explosion: 0, clear: 0 };
+  for (const t of pool) if (counts[t.type] != null) counts[t.type]++;
   $('countAll').textContent = pool.length;
-  $('countDrone').textContent = counts.drone;
-  $('countMissile').textContent = counts.missile;
-  $('countAviation').textContent = counts.aviation;
-  $('countAlert').textContent = counts.alert;
+  for (const type of Object.keys(counts)) $(`count${type[0].toUpperCase()}${type.slice(1)}`).textContent = counts[type];
   $('eventCount').textContent = visibleThreats().length;
-  $('eventPanelTitle').textContent = state.settings.onlyMine && state.home ? `Події · ${state.home.name}` : 'Останні події';
+  $('eventPanelTitle').textContent = state.settings.onlyMine && state.home ? `Telegram · ${state.home.name}` : 'Останні Telegram-події';
 }
 function renderEvents() {
   const items = [...visibleThreats()].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   const list = $('eventList');
   if (!items.length) {
-    list.innerHTML = `<div class="empty">${state.home && state.settings.onlyMine ? 'Для вибраної зони активних подій не знайдено.' : 'Подій у цьому фільтрі немає.'}</div>`;
+    list.innerHTML = `<div class="empty">${state.home && state.settings.onlyMine ? 'Для вибраного радіуса свіжих Telegram-подій не знайдено. Це не є підтвердженням відсутності загрози.' : 'Подій у цьому фільтрі немає.'}</div>`;
     return;
   }
   list.innerHTML = items.map((t) => {
-    const meta = typeMeta[t.type] || typeMeta.alert;
-    const distance = state.home && t.lat != null ? haversineKm(state.home.lat, state.home.lon, t.lat, t.lon) : null;
-    const relevant = isThreatRelevant(t) ? '<span class="relevant-pill">ваша зона</span>' : '';
-    return `<button class="event-item" data-id="${escapeHtml(t.id)}" type="button"><span class="event-icon threat-${t.type}">${meta.symbol}</span><span class="event-main"><strong>${escapeHtml(t.title)} ${relevant}</strong><span>${escapeHtml(t.detail)}</span><small>${formatAge(t.timestamp)} · ${escapeHtml(t.source)}${distance == null ? '' : ` · ~${distance.toFixed(0)} км`}</small></span></button>`;
+    const meta = typeMeta[t.type] || typeMeta.explosion;
+    const distance = state.home && t.lat != null && t.meta?.locationScope !== 'region' ? haversineKm(state.home.lat, state.home.lon, t.lat, t.lon) : null;
+    const relevant = state.home && isThreatRelevant(t) ? '<span class="relevant-pill">ваша зона</span>' : '';
+    const approx = t.meta?.approximatePoint ? ' · ≈ населений пункт' : '';
+    return `<button class="event-item" data-id="${escapeHtml(t.id)}" type="button"><span class="event-icon threat-${t.type}">${meta.symbol}</span><span class="event-main"><strong>${escapeHtml(t.title)} ${relevant}</strong><span>${escapeHtml(t.meta?.location || t.detail)}</span><small>${formatAge(t.timestamp)} · ${escapeHtml(sourceLine(t))}${distance == null ? '' : ` · ~${distance.toFixed(0)} км`}${approx}</small></span></button>`;
   }).join('');
   list.querySelectorAll('.event-item').forEach((btn) => btn.addEventListener('click', () => {
     const t = state.threats.find((x) => x.id === btn.dataset.id);
@@ -163,53 +193,52 @@ function renderEvents() {
 function renderProximity() {
   const card = $('proximityCard');
   if (!state.home) { card.classList.add('hidden'); return; }
-  if (state.localityStatus?.active) {
-    $('proximityTitle').textContent = 'Тривога у вашій адміністративній зоні';
-    $('proximityText').textContent = state.localityStatus.detail || state.localityStatus.label || 'Активна тривога';
-    card.classList.add('danger'); card.classList.remove('hidden'); return;
-  }
-  const points = state.threats.filter((t) => t.lat != null && t.lon != null && !t.meta?.approximatePoint).map((t) => ({ ...t, distance: haversineKm(state.home.lat, state.home.lon, t.lat, t.lon) })).sort((a, b) => a.distance - b.distance);
+  const points = state.threats
+    .filter((t) => t.lat != null && t.lon != null && t.type !== 'clear' && t.meta?.locationScope !== 'region')
+    .map((t) => ({ ...t, distance: haversineKm(state.home.lat, state.home.lon, t.lat, t.lon) }))
+    .sort((a, b) => a.distance - b.distance);
   if (!points.length) { card.classList.add('hidden'); return; }
   const nearest = points[0];
-  $('proximityTitle').textContent = nearest.distance <= state.settings.radiusKm ? 'Подія у вашому радіусі' : 'Найближча відображена подія';
-  $('proximityText').textContent = `${nearest.title}: приблизно ${nearest.distance.toFixed(0)} км від обраної точки.`;
+  $('proximityTitle').textContent = nearest.distance <= state.settings.radiusKm ? 'Згадана подія у вашому радіусі' : 'Найближча згадана місцевість';
+  $('proximityText').textContent = `${nearest.title}: центр згаданої місцевості ~${nearest.distance.toFixed(0)} км від ${state.home.name}.`;
   card.classList.toggle('danger', nearest.distance <= state.settings.radiusKm);
   card.classList.remove('hidden');
 }
-function renderAll() { renderHome(); renderCounts(); renderMarkers(); renderEvents(); renderProximity(); }
+function renderAll() { renderHome(); renderFeedHealth(); renderCounts(); renderMarkers(); renderEvents(); renderProximity(); }
 function setConnection(text) { $('connectionLabel').textContent = text; }
 function showToast(message) {
   const toast = $('toast'); toast.textContent = message; toast.classList.add('show');
   clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove('show'), 3500);
 }
 async function maybeNotifyNew(items) {
-  const relevant = items.filter((t) => isThreatRelevant(t));
+  if (!state.initialized) { items.forEach((t) => state.knownIds.add(t.id)); return; }
+  const relevant = items.filter((t) => isThreatRelevant(t) && t.type !== 'clear');
   const fresh = relevant.filter((t) => !state.knownIds.has(t.id));
   items.forEach((t) => state.knownIds.add(t.id));
   if (config.enableBackgroundPush || !state.settings.notifications || !('Notification' in window) || Notification.permission !== 'granted' || !fresh.length) return;
   const newest = fresh.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
   if (Date.now() - new Date(newest.timestamp).getTime() > 3 * 60 * 1000) return;
   const reg = await navigator.serviceWorker?.ready;
-  reg?.showNotification(`RadarUa · ${newest.title}`, { body: newest.detail || 'Нова подія у вашій зоні', icon: './assets/icons/icon-192.png', tag: `radar-${newest.id}` });
+  reg?.showNotification(`RadarUa · ${newest.title}`, { body: `Згадано: ${newest.meta?.location || newest.detail}`, icon: './assets/icons/icon-192.png', tag: `radar-${newest.id}` });
 }
 async function refreshThreats({ silent = false } = {}) {
   if (!apiReady()) {
-    setConnection('потрібен URL API');
-    $('modeBadge').textContent = 'SETUP';
-    state.threats = []; state.localityStatus = null; renderAll();
-    return;
+    setConnection('потрібен URL Worker'); state.threats = []; state.monitoringStatus = null; renderAll(); return;
   }
-  if (!silent) setConnection('оновлення…');
+  if (!silent) setConnection('оновлення Telegram…');
   try {
     const result = await loadThreats(state.home, state.settings.radiusKm);
     await maybeNotifyNew(result.items);
     state.threats = result.items;
-    state.localityStatus = result.localityStatus;
+    state.monitoringStatus = result.monitoring;
+    state.initialized = true;
     renderAll();
     $('lastUpdated').textContent = `оновлено ${new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
-    setConnection(state.wsConnected ? 'онлайн · realtime' : 'онлайн · офіційні дані'); $('modeBadge').textContent = state.wsConnected ? 'RT' : 'LIVE';
+    if (state.monitoringStatus?.state === 'online') setConnection(state.wsConnected ? 'Telegram · realtime' : 'Telegram · онлайн');
+    else if (state.monitoringStatus?.state === 'stale') setConnection('Telegram · дані застаріли');
+    else setConnection('Telegram · потік офлайн');
   } catch (error) {
-    console.error(error); setConnection('помилка API'); showToast(error.message || 'Не вдалося оновити дані');
+    console.error(error); setConnection('помилка backend'); if (!silent) showToast(error.message || 'Не вдалося оновити дані');
   }
 }
 function openSettings() {
@@ -227,10 +256,10 @@ async function performPlaceSearch() {
     const items = await searchPlaces(q);
     $('searchStatus').textContent = items.length ? 'Оберіть правильний населений пункт:' : 'Нічого не знайдено.';
     $('searchResults').innerHTML = items.map((p, i) => `<button class="place-result" type="button" data-index="${i}"><strong>${escapeHtml(p.type ? `${p.type} ${p.name}` : p.name)}</strong><span>${escapeHtml([p.hromada, p.district, p.oblast].filter(Boolean).join(' · '))}</span></button>`).join('');
-    $('searchResults').querySelectorAll('.place-result').forEach((btn) => btn.addEventListener('click', () => {
+    $('searchResults').querySelectorAll('.place-result').forEach((btn) => btn.addEventListener('click', async () => {
       const p = items[Number(btn.dataset.index)];
-      state.home = p; state.settings.home = p; saveSettings(); renderHome(); closeSettings();
-      state.map.flyTo([p.lat, p.lon], 10, { duration: .7 }); refreshThreats(); syncPushSettings(); showToast(`Збережено: ${p.name}`);
+      state.home = p; state.settings.home = p; saveSettings(); closeSettings();
+      state.map.flyTo([p.lat, p.lon], 10, { duration: .7 }); await refreshThreats(); await syncPushSettings(); showToast(`Збережено: ${p.name}`);
     }));
   } catch (error) { $('searchStatus').textContent = error.message; }
 }
@@ -246,114 +275,58 @@ function useGps({ setAsHome = false } = {}) {
       try {
         const items = await searchPlaces(`${state.gps.lat},${state.gps.lon}`);
         const p = items[0] || { name: 'GPS-точка', type: '', lat: state.gps.lat, lon: state.gps.lon, oblast: '', district: '', hromada: '', source: 'local-gps' };
-        state.home = p; state.settings.home = state.home; saveSettings(); closeSettings(); await refreshThreats(); await syncPushSettings();
-      } catch {
-        showToast('GPS визначено, але населений пункт не вдалося визначити. Спробуйте пошук за назвою.');
-      }
+        state.home = p; state.settings.home = p; saveSettings(); closeSettings(); await refreshThreats(); await syncPushSettings();
+      } catch { showToast('GPS визначено, але населений пункт не вдалося визначити.'); }
     }
-    setConnection('онлайн');
-  }, () => { setConnection('онлайн'); showToast('Дозвіл на GPS не надано.'); }, { timeout: 10000, maximumAge: 120000 });
+    setConnection(feedStateText());
+  }, () => { setConnection(feedStateText()); showToast('Дозвіл на GPS не надано.'); }, { timeout: 10000, maximumAge: 120000 });
 }
 function urlBase64ToUint8Array(value) {
   const padding = '='.repeat((4 - value.length % 4) % 4);
   const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const raw = atob(base64);
-  return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+  const raw = atob(base64); return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
 }
 function pushPlace() {
   if (!state.home) return null;
-  const place = {
-    name: state.home.name || '',
-    type: state.home.type || '',
-    oblast: state.home.oblast || '',
-    district: state.home.district || '',
-    hromada: state.home.hromada || ''
-  };
-  // Координати передаємо лише для центру населеного пункту з геокодера, не для точної GPS-точки.
-  if (state.home.source === 'OpenStreetMap/Nominatim' && Number.isFinite(state.home.lat) && Number.isFinite(state.home.lon)) {
-    place.lat = state.home.lat;
-    place.lon = state.home.lon;
-  }
+  const place = { name: state.home.name || '', type: state.home.type || '', oblast: state.home.oblast || '', district: state.home.district || '', hromada: state.home.hromada || '' };
+  if (state.home.source === 'OpenStreetMap/Nominatim' && Number.isFinite(state.home.lat) && Number.isFinite(state.home.lon)) { place.lat = state.home.lat; place.lon = state.home.lon; }
   return place;
 }
 async function currentPushSubscription() {
   if (!('serviceWorker' in navigator)) return null;
-  const registration = await navigator.serviceWorker.ready;
-  return registration.pushManager?.getSubscription() || null;
+  const registration = await navigator.serviceWorker.ready; return registration.pushManager?.getSubscription() || null;
 }
 async function syncPushSettings({ quiet = true } = {}) {
   if (!state.settings.notifications || !state.home || !apiReady()) return;
   try {
-    const subscription = await currentPushSubscription();
-    if (!subscription) return;
+    const subscription = await currentPushSubscription(); if (!subscription) return;
     await savePushSubscription(subscription.toJSON(), pushPlace(), state.settings.radiusKm, state.settings.monitoring);
     if (!quiet) showToast('Push-зону оновлено.');
-  } catch (error) {
-    console.warn('Push sync failed', error);
-    if (!quiet) showToast('Не вдалося оновити push-зону.');
-  }
+  } catch (error) { console.warn(error); if (!quiet) showToast('Не вдалося оновити push-зону.'); }
 }
 async function setNotifications(enabled) {
   if (!enabled) {
-    try {
-      const subscription = await currentPushSubscription();
-      if (subscription) {
-        await deletePushSubscription(subscription.endpoint).catch(() => null);
-        await subscription.unsubscribe();
-      }
-    } catch (error) { console.warn(error); }
-    state.settings.notifications = false;
-    saveSettings();
-    $('notificationsToggle').checked = false;
-    showToast('Фонові push-сповіщення вимкнено.');
-    return;
+    try { const subscription = await currentPushSubscription(); if (subscription) { await deletePushSubscription(subscription.endpoint).catch(() => null); await subscription.unsubscribe(); } } catch (error) { console.warn(error); }
+    state.settings.notifications = false; saveSettings(); $('notificationsToggle').checked = false; showToast('Push-сповіщення вимкнено.'); return;
   }
   if (!config.enableBackgroundPush || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
-    $('notificationsToggle').checked = false;
-    showToast('Фонові push не підтримуються цим браузером або вимкнені в config.js.');
-    return;
+    $('notificationsToggle').checked = false; showToast('Push не підтримуються цим браузером або вимкнені.'); return;
   }
-  if (!state.home) {
-    $('notificationsToggle').checked = false;
-    showToast('Спочатку оберіть населений пункт.');
-    return;
-  }
+  if (!state.home) { $('notificationsToggle').checked = false; showToast('Спочатку оберіть населений пункт.'); return; }
   try {
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') throw new Error('Дозвіл на сповіщення не надано');
-    const pushConfig = await getPushConfig();
-    if (!pushConfig?.enabled || !pushConfig?.publicKey) throw new Error('Push ще не налаштований на сервері');
+    const permission = await Notification.requestPermission(); if (permission !== 'granted') throw new Error('Дозвіл на сповіщення не надано');
+    const pc = await getPushConfig(); if (!pc?.enabled || !pc?.publicKey) throw new Error('Push ще не налаштований на Worker');
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
-    if (!subscription) {
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(pushConfig.publicKey)
-      });
-    }
-    await savePushSubscription(subscription.toJSON(), pushPlace(), state.settings.radiusKm, state.settings.monitoring);
-    state.settings.notifications = true;
-    saveSettings();
-    $('notificationsToggle').checked = true;
-    showToast('Фонові push-сповіщення увімкнено.');
-  } catch (error) {
-    console.error(error);
-    state.settings.notifications = false;
-    saveSettings();
-    $('notificationsToggle').checked = false;
-    showToast(error.message || 'Не вдалося увімкнути push.');
-  }
+    if (!subscription) subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(pc.publicKey) });
+    await savePushSubscription(subscription.toJSON(), pushPlace(), state.settings.radiusKm, true);
+    state.settings.notifications = true; saveSettings(); $('notificationsToggle').checked = true; showToast('Push для вашої зони увімкнено.');
+  } catch (error) { console.error(error); state.settings.notifications = false; saveSettings(); $('notificationsToggle').checked = false; showToast(error.message || 'Не вдалося увімкнути push.'); }
 }
-
 function closeRealtime() {
-  clearTimeout(state.wsReconnectTimer);
-  state.wsReconnectTimer = null;
-  if (state.ws) {
-    state.ws.onclose = null;
-    try { state.ws.close(); } catch {}
-  }
-  state.ws = null;
-  state.wsConnected = false;
+  clearTimeout(state.wsReconnectTimer); state.wsReconnectTimer = null;
+  if (state.ws) { state.ws.onclose = null; try { state.ws.close(); } catch {} }
+  state.ws = null; state.wsConnected = false;
 }
 function scheduleRealtimeReconnect() {
   clearTimeout(state.wsReconnectTimer);
@@ -363,39 +336,23 @@ function scheduleRealtimeReconnect() {
 function connectRealtime() {
   closeRealtime();
   if (!state.settings.monitoring || !config.enableRealtime || !apiReady() || !('WebSocket' in window)) return;
-  const url = streamUrl();
-  if (!url) return;
+  const url = streamUrl(); if (!url) return;
   try {
-    const ws = new WebSocket(url);
-    state.ws = ws;
-    ws.addEventListener('open', () => {
-      state.wsConnected = true;
-      setConnection('онлайн · realtime');
-      $('modeBadge').textContent = 'RT';
-    });
+    const ws = new WebSocket(url); state.ws = ws;
+    ws.addEventListener('open', () => { state.wsConnected = true; setConnection('Telegram · realtime'); renderFeedHealth(); });
     ws.addEventListener('message', async (event) => {
-      let payload;
-      try { payload = JSON.parse(event.data); } catch { return; }
+      let payload; try { payload = JSON.parse(event.data); } catch { return; }
+      if (payload?.type === 'hello' && payload.status) { state.monitoringStatus = payload.status; renderAll(); return; }
       if (payload?.type !== 'event' || !payload.event) return;
       const incoming = normalizeThreat(payload.event);
       const previous = state.threats.find((item) => item.id === incoming.id);
       state.threats = [incoming, ...state.threats.filter((item) => item.id !== incoming.id)];
       if (!previous) await maybeNotifyNew([incoming]);
-      renderAll();
-      $('lastUpdated').textContent = `realtime ${new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
+      renderAll(); $('lastUpdated').textContent = `realtime ${new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
     });
-    ws.addEventListener('close', () => {
-      if (state.ws !== ws) return;
-      state.ws = null;
-      state.wsConnected = false;
-      setConnection('онлайн · очікую realtime');
-      $('modeBadge').textContent = 'LIVE';
-      scheduleRealtimeReconnect();
-    });
+    ws.addEventListener('close', () => { if (state.ws !== ws) return; state.ws = null; state.wsConnected = false; renderFeedHealth(); scheduleRealtimeReconnect(); });
     ws.addEventListener('error', () => { try { ws.close(); } catch {} });
-  } catch {
-    scheduleRealtimeReconnect();
-  }
+  } catch { scheduleRealtimeReconnect(); }
 }
 function setupUI() {
   document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => {
@@ -404,7 +361,6 @@ function setupUI() {
   ['homeAreaBtn', 'settingsBtn', 'changeLocalityBtn'].forEach((id) => $(id).addEventListener('click', openSettings));
   $('closeSettingsBtn').addEventListener('click', closeSettings); $('sheetBackdrop').addEventListener('click', closeSettings);
   $('searchLocalityBtn').addEventListener('click', performPlaceSearch);
-  let debounce; $('localitySearch').addEventListener('input', () => { clearTimeout(debounce); debounce = setTimeout(() => { if ($('localitySearch').value.trim().length >= 3) performPlaceSearch(); }, 700); });
   $('localitySearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') performPlaceSearch(); });
   let pushSyncTimer; $('radiusRange').addEventListener('input', (e) => { state.settings.radiusKm = Number(e.target.value); $('radiusValue').textContent = state.settings.radiusKm; saveSettings(); renderAll(); clearTimeout(pushSyncTimer); pushSyncTimer = setTimeout(() => syncPushSettings(), 700); });
   $('onlyMineToggle').addEventListener('change', (e) => { state.settings.onlyMine = e.target.checked; saveSettings(); renderAll(); });
@@ -415,11 +371,13 @@ function setupUI() {
   $('panelToggle').addEventListener('click', () => { const panel = $('eventPanel'); const collapsed = panel.classList.toggle('collapsed'); $('panelToggle').setAttribute('aria-expanded', String(!collapsed)); $('panelToggle').querySelector('.chevron').textContent = collapsed ? '⌃' : '⌄'; });
   window.addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); state.installPrompt = event; });
   $('installBtn').addEventListener('click', async () => { if (!state.installPrompt) { showToast('На iPhone: Поділитися → На початковий екран.'); return; } state.installPrompt.prompt(); await state.installPrompt.userChoice; state.installPrompt = null; });
-  window.addEventListener('online', () => { refreshThreats({ silent: true }); connectRealtime(); }); window.addEventListener('offline', () => { closeRealtime(); setConnection('офлайн'); });
+  window.addEventListener('online', () => { refreshThreats({ silent: true }); connectRealtime(); });
+  window.addEventListener('offline', () => { closeRealtime(); setConnection('офлайн'); });
 }
 async function registerServiceWorker() { if ('serviceWorker' in navigator) try { await navigator.serviceWorker.register('./sw.js', { scope: './' }); } catch (e) { console.warn(e); } }
-function startAutoRefresh() { clearInterval(state.refreshTimer); state.refreshTimer = setInterval(() => refreshThreats({ silent: true }), Math.max(10000, Number(config.refreshMs || 20000))); }
+function startAutoRefresh() { clearInterval(state.refreshTimer); state.refreshTimer = setInterval(() => refreshThreats({ silent: true }), Math.max(10000, Number(config.refreshMs || 15000))); }
 
 state.home = state.settings.home;
-initMap(); setupUI(); registerServiceWorker().then(() => { if (state.settings.notifications) syncPushSettings(); }); renderHome(); refreshThreats(); startAutoRefresh(); connectRealtime();
+initMap(); setupUI(); registerServiceWorker().then(() => { if (state.settings.notifications) syncPushSettings(); });
+renderAll(); refreshThreats(); startAutoRefresh(); connectRealtime();
 if (!state.home) setTimeout(openSettings, 450);

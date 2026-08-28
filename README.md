@@ -1,49 +1,56 @@
-# RadarUa — Final 1.0
+# RadarUa — Telegram Online 2.0
 
-Готовий PWA-проєкт для GitHub Pages + Cloudflare Worker. Основний сценарій — один раз вибрати **свій населений пункт** і отримувати статус офіційної тривоги та, за бажанням, моніторингові події у своєму радіусі.
+RadarUa is a PWA for **near-realtime Telegram monitoring around a user-selected Ukrainian locality**. This release intentionally works **without alerts.in.ua / UkraineAlarm or any other air-alert API**.
 
-> **Важливо:** RadarUa — інформаційний сервіс і не замінює офіційні сирени, застосунок «Повітряна тривога», повідомлення органів влади чи правила перебування в укритті. Моніторингові точки — центр згаданої місцевості, а не підтверджена позиція ракети/БПЛА.
+> **Safety:** the feed is informational and is not an official air-raid warning system. A point on the map is the centroid of a locality/region mentioned by a source. It is **not** a verified live coordinate or trajectory of an aircraft, missile or UAV. Absence of fresh Telegram messages does not mean the area is safe.
 
-## Що є у фінальній версії
+## What this release does
 
-- PWA для iOS/Android/desktop і GitHub Pages.
-- Пошук міста, села або селища по Україні.
-- Визначення населеного пункту через GPS.
-- Збереження вибраного населеного пункту локально на пристрої.
-- Визначення релевантної офіційної тривоги за областю / районом / громадою / містом.
-- Режим **«Показувати тільки мою зону»**.
-- Радіус моніторингових подій 5–100 км.
-- Карта, фільтри БПЛА / ракети / авіація / тривоги.
-- Cloudflare Worker як backend-проксі для секретного токена `alerts.in.ua`.
-- Realtime WebSocket через Durable Object.
-- Web Push: початок/відбій офіційної тривоги та релевантні моніторингові події.
-- Захищений ingest endpoint для дозволених моніторингових джерел.
-- Опціональний Telegram bridge на Telethon.
-- Кешування Nominatim і обмеження частоти геокодування.
-- Leaflet 1.9.4 зафіксований через конкретну версію + SRI.
+- Choose and save your own city / town / village.
+- Optional GPS → reverse-geocode to a locality; continuous live GPS is not sent to the backend.
+- Radius 5–100 km and **Only my area** mode.
+- Telegram event types: UAV, missile/ballistics, KAB, aviation, explosions/air defence, source-reported clear.
+- Realtime WebSocket from Cloudflare Durable Object to the PWA.
+- Telegram bridge using an authenticated MTProto user session.
+- New + edited channel posts.
+- Per-channel short-term context for sequences such as “UAV …” → “Course toward Vasylkiv”.
+- Startup backfill after bridge restarts.
+- SQLite outbox and exponential retry when the backend is unavailable.
+- Bridge heartbeat and source-health state (`online / stale / offline`).
+- Server-side geocoding cache and <=1 Nominatim request/sec.
+- Regional aliases such as `Київщина`, `Сумщина`, `Чернігівщина` are treated as regions rather than fake precise points.
+- Cross-channel deduplication: same type + locality in a 6-minute window becomes one event; multiple sources increase `sourceCount`/confidence.
+- Optional Web Push filtered by the saved locality/radius.
+- GitHub Pages frontend-only deployment; bridge/Worker/secrets are not published as the site artifact.
 
-## Структура
+## Architecture
 
 ```text
-.
-├── index.html
-├── app.js
-├── config.js
-├── styles.css
-├── manifest.webmanifest
-├── sw.js
-├── data/feed.js
-├── assets/icons/
-├── worker/                 # Cloudflare API, realtime, push
-├── telegram-bridge/        # опціональний Telegram ingest
-└── .github/workflows/      # GitHub Pages + Worker deploy
+Telegram channels (explicitly configured)
+            │ MTProto / Telethon
+            ▼
+   telegram-bridge (always on)
+   parser + context + SQLite outbox
+            │ Bearer ingest token
+            ▼
+     Cloudflare Worker
+   Durable Object + dedupe
+     │      │       │
+ geocode   WS      Push
+     │      │       │
+     └──────┴───────┘
+            ▼
+        RadarUa PWA
+      GitHub Pages
 ```
 
-## 1. Отримайте токен alerts.in.ua
+## Important: “without API” means without an air-alert API
 
-Потрібен персональний API token `alerts.in.ua`. Він зберігається **тільки** як Cloudflare secret і не потрапляє у frontend.
+To receive arbitrary public channel updates reliably, Telegram requires a legitimate Telegram client authorization. Telegram documents that a third-party client needs its own `api_id` and `api_hash`; create them at `my.telegram.org → API development tools`. Keep both credentials and the resulting session secret private.
 
-## 2. Розгорніть Cloudflare Worker
+This project **does not scrape `t.me/s/...`** as a fallback. Public-web scraping is intentionally not the production path.
+
+## 1. Deploy the Cloudflare Worker
 
 ```bash
 cd worker
@@ -52,91 +59,134 @@ npx wrangler login
 npx wrangler kv namespace create SUBSCRIPTIONS
 ```
 
-Вставте отриманий KV `id` у `worker/wrangler.toml` замість `REPLACE_WITH_KV_ID`.
-
-Згенеруйте VAPID keys:
+Put the returned KV id into `worker/wrangler.toml`, then create a long random ingest secret:
 
 ```bash
-npm run vapid
-```
-
-Додайте secrets:
-
-```bash
-npx wrangler secret put ALERTS_TOKEN
 npx wrangler secret put INGEST_TOKEN
-npx wrangler secret put VAPID_PUBLIC_KEY
-npx wrangler secret put VAPID_PRIVATE_KEY
-npx wrangler secret put VAPID_SUBJECT
-```
-
-`INGEST_TOKEN` — довгий випадковий секрет для прийому моніторингових подій. `VAPID_SUBJECT` — контактний `mailto:` або HTTPS URL.
-
-Deploy:
-
-```bash
 npm run deploy
 ```
 
-Перевірка:
+Check:
 
 ```bash
 curl https://YOUR-WORKER.workers.dev/health
 ```
 
-## 3. Підключіть frontend до Worker
+A healthy Worker can still report Telegram `offline` until the bridge is running.
 
-У кореневому `config.js` вставте URL Worker:
+### Production CORS and source allowlist
+
+After setup, change:
+
+```toml
+ALLOWED_ORIGIN = "https://xott69.github.io"
+SOURCE_ALLOWLIST = "channel_one,channel_two"
+```
+
+Use the exact usernames configured in the bridge. Keep `SOURCE_ALLOWLIST=""` only while setting up/testing.
+
+## 2. Configure the frontend
+
+In root `config.js`:
 
 ```js
 apiBaseUrl: 'https://YOUR-WORKER.workers.dev',
 ```
 
-Для production також змініть у `worker/wrangler.toml`:
+Commit to `main`. The included Pages workflow publishes only:
 
-```toml
-ALLOWED_ORIGIN = "https://XOTT69.github.io"
+- `index.html`
+- `app.js`
+- `styles.css`
+- `config.js`
+- `manifest.webmanifest`
+- `sw.js`
+- `data/feed.js`
+- icons
+
+## 3. Configure Telegram realtime
+
+See `telegram-bridge/README.md`.
+
+Short version:
+
+```bash
+cd telegram-bridge
+pip install -r requirements.txt
+python login.py
 ```
 
-Якщо GitHub Pages використовує project URL, браузерний `Origin` усе одно буде `https://XOTT69.github.io`.
+Store the generated `TG_SESSION_STRING` only in your hosting secret manager. Copy `.env.example` → `.env` locally/host-side and set:
 
-## 4. GitHub Pages
+```dotenv
+TG_API_ID=...
+TG_API_HASH=...
+TG_SESSION_STRING=...
+TG_CHANNELS=channel_one,channel_two
+RADAR_API_URL=https://YOUR-WORKER.workers.dev
+RADAR_INGEST_TOKEN=...
+```
 
-Завантажте вміст цієї папки в корінь репозиторію `XOTT69/RadarUa` і зробіть commit у `main`.
+For reliable live channel updates, the authorized Telegram account should be subscribed to the configured channels. Automatic joining is **off** by default.
 
-Далі: **Settings → Pages → Source → GitHub Actions**. Workflow `.github/workflows/pages.yml` публікує тільки frontend-файли; backend, bridge і secrets у Pages artifact не потрапляють.
+Run it on an always-on host:
 
-## 5. Свій населений пункт
+```bash
+docker compose -f docker-compose.example.yml up -d --build
+```
 
-Після відкриття PWA:
+GitHub Actions/GitHub Pages cannot themselves keep an MTProto listener alive 24/7.
 
-1. Введіть, наприклад, `Чабани`.
-2. Оберіть правильний населений пункт зі списку.
-3. Задайте радіус, наприклад 25 км.
-4. Залиште увімкненим «Показувати тільки мою зону».
-5. За бажанням увімкніть моніторинг і Push.
+## 4. Optional Web Push
 
-GPS потрібен лише для визначення населеного пункту. Для push backend отримує адміністративний вибір; точна GPS-позиція не зберігається як live location.
+The realtime map works without push. To add background push:
 
-## 6. Моніторингові джерела
+```bash
+cd worker
+npm run vapid
+npx wrangler secret put VAPID_PUBLIC_KEY
+npx wrangler secret put VAPID_PRIVATE_KEY
+npx wrangler secret put VAPID_SUBJECT
+npm run deploy
+```
 
-`telegram-bridge/` є опціональним. Використовуйте лише публічні/дозволені канали, умови яких дозволяють автоматизоване читання/повторне використання. Bridge передає **назву згаданої місцевості**, а Worker сам геокодує її до центра населеного пункту.
+For `VAPID_SUBJECT`, use a contact `mailto:` or HTTPS URL.
 
-Деталі: `telegram-bridge/README.md`.
+## 5. Choose “my locality”
 
-## Перевірки
+Open the PWA and:
+
+1. Search manually by name (`Знайти` or Enter; no autocomplete).
+2. Pick the correct result.
+3. Choose radius, e.g. 25 km.
+4. Enable **Only my area**.
+5. Optionally enable Push.
+
+The public Nominatim service is used only for explicit search/reverse-geocode and event locality resolution. Worker requests are serialized and cached.
+
+## Event semantics
+
+- **destination** — source says the object is heading toward the named place;
+- **near** — source says it is near/in the area of the named place;
+- **route** — source mentions the place as part of a route;
+- **region** — e.g. `Київщина`; relevance is determined by the selected oblast, not distance to the oblast centroid.
+
+RadarUa never extrapolates a trajectory from these messages.
+
+## Source handling
+
+Only configure channels you have deliberately selected and whose content/use conditions you are prepared to follow. RadarUa stores a short normalized event, source label, message id/link and recent event history required to operate the service; it is not intended as a bulk Telegram archive.
+
+## Tests
 
 ```bash
 node --check app.js
 node --check data/feed.js
+node --check sw.js
 node --check worker/src/index.js
-cd telegram-bridge && python -m unittest -v test_parser.py
+cd telegram-bridge
+python -m unittest -v
+python -m py_compile bridge.py parser.py login.py
 ```
 
-Для локального frontend:
-
-```bash
-python3 -m http.server 8080
-```
-
-Потім відкрийте `http://localhost:8080`.
+`IMPLEMENTATION_PLAN.md` documents the design decisions and failure modes. `RELEASE_CHECKLIST.md` is the deployment checklist.
