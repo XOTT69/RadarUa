@@ -1,42 +1,41 @@
-# RadarUa API — Cloudflare Worker
+# RadarUa Worker — Telegram-only mode
 
-Backend для RadarUa Final 1.0: офіційні активні тривоги, пошук населеного пункту, monitoring feed, WebSocket realtime та Web Push.
+Cloudflare Worker + Durable Object receives parsed monitoring events from `telegram-bridge`, deduplicates them, geocodes named localities, exposes realtime WebSocket/API to the PWA and optionally sends Web Push.
 
-## API
+**No alerts.in.ua / UkraineAlarm key is required in this version.**
 
+## Source allowlist
+After the bridge works, set `SOURCE_ALLOWLIST` in `wrangler.toml` to the configured channel usernames (comma-separated). This prevents a leaked ingest token from being used to inject arbitrary source labels.
+
+## Required
+1. Create KV for push subscriptions (even if push is not configured yet):
+   `npx wrangler kv namespace create SUBSCRIPTIONS`
+2. Put the returned KV id into `wrangler.toml`.
+3. Create ingest secret:
+   `npx wrangler secret put INGEST_TOKEN`
+4. Deploy:
+   `npm install && npm run deploy`
+5. Put the Worker URL into root `config.js`.
+
+## Optional push
+Run `npm run vapid`, then set `VAPID_SUBJECT`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` as Worker secrets/vars.
+
+## Public endpoints
 - `GET /health`
+- `GET /api/status` — Telegram bridge/channel freshness
+- `GET /api/threats`
 - `GET /api/places?q=...`
-- `GET /api/threats?...`
-- `GET /api/stream` — WebSocket
+- `GET /api/stream` (WebSocket)
 - `GET /api/monitoring/events`
-- `POST /api/monitoring/events` — `Authorization: Bearer <INGEST_TOKEN>`
-- `GET /api/push/config`
-- `POST /api/push/subscribe`
-- `POST|DELETE /api/push/unsubscribe`
 
-## Точність даних
+## Protected endpoints
+- `POST /api/monitoring/events`
+- `POST /api/bridge/heartbeat`
 
-Офіційні тривоги зіставляються з вибраною адміністративною зоною. Їхні координати на загальній карті — умовні display-точки.
+Both require `Authorization: Bearer <INGEST_TOKEN>`.
 
-Monitoring ingest вимагає назву населеного пункту/території. Backend геокодує її до центра місцевості. Це **не позиція повітряної цілі**.
+## Dedupe
+Events of the same type + same named locality inside a 6-minute window are merged. Multiple independent channels raise `sourceCount` and `corroborated`, instead of creating overlapping markers.
 
-## Setup
-
-```bash
-npm install
-npx wrangler kv namespace create SUBSCRIPTIONS
-```
-
-Вставте KV ID у `wrangler.toml`.
-
-```bash
-npm run vapid
-npx wrangler secret put ALERTS_TOKEN
-npx wrangler secret put INGEST_TOKEN
-npx wrangler secret put VAPID_PUBLIC_KEY
-npx wrangler secret put VAPID_PRIVATE_KEY
-npx wrangler secret put VAPID_SUBJECT
-npm run deploy
-```
-
-У production обмежте `ALLOWED_ORIGIN` до origin GitHub Pages.
+## Geocoding caveat
+Public Nominatim is rate limited; this Worker serializes requests to <=1/s and caches results for 7 days. For a large public service, switch to a self-hosted/paid geocoder or a local Ukraine settlement dataset.
