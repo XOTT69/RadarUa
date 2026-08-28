@@ -4,6 +4,6 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./sessions:/app/sessions
-    environment:
-      TG_SESSION: /app/sessions/radarua
+      - radarua_data:/data
+volumes:
+  radarua_data:

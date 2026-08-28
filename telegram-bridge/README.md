@@ -1,54 +1,36 @@
-# Telegram bridge — RadarUa Final 1.0
+# RadarUa Telegram bridge
 
-Опціональний bridge читає **лише явно перелічені публічні/дозволені Telegram-канали**, знаходить повідомлення з типом загрози та назвою місцевості й надсилає нормалізовану подію у RadarUa Worker.
+Це near-realtime джерело RadarUa. Воно читає **лише явно задані** Telegram-канали через MTProto, парсить нові/відредаговані повідомлення та передає події у Cloudflare Worker.
 
-Він не надсилає live-координати або вектор руху. Backend геокодує лише назву згаданої/цільової місцевості до її центра.
+## Чому не Bot API
+Для сторонніх публічних каналів бот зазвичай не отримує всі `channel_post`, якщо його не додали до каналу. Для моніторингу явно дозволених/публічних джерел тут використовується user-authorized MTProto client (Telethon).
 
-## 1. Telegram API credentials
+## Перший вхід
+1. Створіть власні `api_id` і `api_hash` на `my.telegram.org` → **API development tools**.
+2. Локально встановіть залежності: `pip install -r requirements.txt`.
+3. Запустіть `python login.py`.
+4. Введіть номер, код Telegram і 2FA-пароль, якщо він увімкнений.
+5. Отриманий `TG_SESSION_STRING` збережіть як **secret** у хостингу. Не додавайте його в GitHub.
 
-Створіть `api_id` / `api_hash` для власного Telegram client за офіційною процедурою Telegram. Не публікуйте `api_hash` та session-файл.
+## Надійність
+- `NewMessage` + `MessageEdited`.
+- backfill останніх повідомлень після рестарту;
+- SQLite outbox: подія не губиться, якщо Worker тимчасово недоступний;
+- exponential retry;
+- heartbeat раз на 30 секунд;
+- deterministic message IDs — повторна доставка не створює дубль;
+- 5-хвилинний контекст на канал: короткі пости на кшталт «Курсом на Васильків» можуть успадкувати тип загрози лише від недавнього явного повідомлення того самого каналу.
 
-## 2. Налаштування
+## Запуск Docker
+Скопіюйте `.env.example` у `.env` і заповніть значення. У `TG_CHANNELS` вкажіть лише ті публічні/дозволені джерела, які ви свідомо обрали та маєте право використовувати. Акаунт Telegram має бути підписаний на ці канали для надійних live-updates. `AUTO_JOIN_CHANNELS=false` за замовчуванням.
 
-```bash
-cp .env.example .env
-```
-
-Заповніть:
-
-```env
-TG_API_ID=123456
-TG_API_HASH=...
-TG_SESSION=radarua
-TG_CHANNELS=@public_channel_1,@public_channel_2
-RADAR_API_URL=https://YOUR-WORKER.workers.dev
-RADAR_INGEST_TOKEN=...
-EVENT_TTL_MINUTES=120
-```
-
-Використовуйте лише джерела, для яких у вас є право/дозвіл на автоматизоване читання та повторне використання даних.
-
-## 3. Запуск без Docker
+Запуск:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python bridge.py
+docker compose -f docker-compose.example.yml up -d --build
 ```
 
-Перший запуск Telethon попросить авторизувати Telegram-акаунт і створить session-файл. Він у `.gitignore`.
+Bridge має працювати на **always-on** хості (VPS/Render/Railway/Fly тощо). GitHub Pages не може сам постійно слухати Telegram.
 
-## Docker
-
-```bash
-mkdir -p sessions
-cp docker-compose.example.yml docker-compose.yml
-docker compose up -d --build
-```
-
-## Parser tests
-
-```bash
-python -m unittest -v test_parser.py
-```
+## Важливо
+Подія на карті — це центр **названого/цільового населеного пункту**, який згаданий у повідомленні. Це не телеметрія і не точна координата повітряної цілі.
