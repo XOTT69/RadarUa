@@ -4,7 +4,7 @@ function baseUrl() { return String(config.apiBaseUrl || '').replace(/\/$/, ''); 
 export function apiReady() { return Boolean(baseUrl()); }
 
 async function request(path, options = {}) {
-  if (!apiReady()) throw new Error('API URL не налаштовано');
+  if (!apiReady()) throw new Error('URL backend не налаштовано');
   const response = await fetch(`${baseUrl()}${path}`, {
     ...options,
     headers: { Accept: 'application/json', ...(options.headers || {}) },
@@ -13,21 +13,22 @@ async function request(path, options = {}) {
   const text = await response.text();
   let payload = null;
   try { payload = text ? JSON.parse(text) : null; } catch { payload = null; }
-  if (!response.ok) throw new Error(payload?.message || payload?.error || `API ${response.status}`);
+  if (!response.ok) throw new Error(payload?.message || payload?.error || `Backend ${response.status}`);
   return payload;
 }
 
 export function normalizeThreat(item) {
+  const allowed = ['drone', 'missile', 'kab', 'aviation', 'explosion', 'clear'];
   return {
     id: String(item.id ?? crypto.randomUUID()),
-    type: ['drone', 'missile', 'aviation', 'alert'].includes(item.type) ? item.type : 'alert',
+    type: allowed.includes(item.type) ? item.type : 'explosion',
     title: String(item.title ?? 'Подія'),
     detail: String(item.detail ?? ''),
     lat: Number.isFinite(Number(item.lat)) ? Number(item.lat) : null,
     lon: Number.isFinite(Number(item.lon)) ? Number(item.lon) : null,
     course: Number.isFinite(Number(item.course)) ? Number(item.course) : null,
     confidence: item.confidence ?? 'unknown',
-    source: String(item.source ?? 'Unknown'),
+    source: String(item.source ?? 'Telegram'),
     timestamp: item.timestamp ? new Date(item.timestamp).toISOString() : new Date().toISOString(),
     meta: item.meta && typeof item.meta === 'object' ? item.meta : {}
   };
@@ -46,7 +47,6 @@ export async function loadThreats(place, radiusKm = 25) {
   const items = Array.isArray(payload) ? payload : payload?.items;
   return {
     items: Array.isArray(items) ? items.map(normalizeThreat) : [],
-    localityStatus: payload?.localityStatus || null,
     generatedAt: payload?.generatedAt || null,
     monitoring: payload?.monitoring || null,
     notice: payload?.notice || ''
@@ -62,23 +62,16 @@ export function streamUrl() {
   if (!apiReady()) return '';
   return `${baseUrl().replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/api/stream`;
 }
-
-export async function getPushConfig() {
-  return request('/api/push/config', { cache: 'no-store' });
-}
-
+export async function getStatus() { return request('/api/status'); }
+export async function getPushConfig() { return request('/api/push/config', { cache: 'no-store' }); }
 export async function savePushSubscription(subscription, place, radiusKm, monitoring = true) {
   return request('/api/push/subscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subscription, place, radiusKm, monitoring })
   });
 }
-
 export async function deletePushSubscription(endpoint) {
   return request('/api/push/unsubscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ endpoint })
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint })
   });
 }
