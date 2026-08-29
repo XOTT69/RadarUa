@@ -1,4 +1,4 @@
-const CACHE = 'radarua-telegram-shell-2.1';
+const CACHE = 'radarua-telegram-shell-2.2';
 const ASSETS = ['./','./index.html','./styles.css','./app.js','./config.js','./data/feed.js','./manifest.webmanifest','./assets/icons/icon-192.png','./assets/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {

@@ -7,7 +7,7 @@ Cloudflare Worker + Cron reads the public web view of selected Telegram channels
 ## Source allowlist
 Set `SOURCE_ALLOWLIST` in `wrangler.toml` to public Telegram usernames (comma-separated). The scheduled scanner reads only these public `t.me/s/<username>` pages. No Telegram credentials or separate bridge host are needed.
 
-`NEPTUN_API_URL` is a public, keyless read-only API. The PWA must keep a visible NEPTUN attribution link when this integration is enabled.
+`NEPTUN_API_URL`, `NEPTUN_ALERTS_URL` and `NEPTUN_RAIONS_GEOJSON_URL` are public, keyless read-only endpoints. The PWA must keep a visible NEPTUN attribution link when this integration is enabled.
 
 ## Required
 1. Create KV for push subscriptions (even if push is not configured yet):

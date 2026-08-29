@@ -46,11 +46,13 @@
 
     <main class="map-shell">
       <div id="map" aria-label="Карта повітряних загроз"></div>
+      <div class="ukraine-map-caption" aria-hidden="true"><strong>УКРАЇНА</strong><span>активні райони — червоним</span></div>
+      <div class="map-credit">Контури областей: <a href="https://neptun.in.ua/" target="_blank" rel="noopener noreferrer">NEPTUN</a></div>
 
       <section id="localityCard" class="locality-card">
         <div class="locality-status-dot" id="localityStatusDot"></div>
         <div class="locality-copy">
-          <span class="eyebrow">Мій населений пункт</span>
+          <span class="eyebrow">Моя локація</span>
           <strong id="localityName">Не вибрано</strong>
           <small id="localityStatus">Натисніть, щоб обрати</small>
         </div>
@@ -67,6 +69,15 @@
         <button class="filter" data-type="clear" type="button">Відбій <b id="countClear">0</b></button>
       </div>
 
+      <div class="source-filters" aria-label="Фільтр за джерелом">
+        <span>Джерело</span>
+        <button class="source-filter active" data-source="all" type="button">Усі</button>
+        <button class="source-filter" data-source="neptun" type="button">NEPTUN</button>
+        <button class="source-filter" data-source="telegram" type="button">Telegram</button>
+      </div>
+
+      <div id="alertLegend" class="alert-legend hidden" aria-live="polite"></div>
+
       <button id="panelToggle" class="panel-toggle" type="button" aria-expanded="true">
         <span>Події</span><b id="eventCount">0</b><span class="chevron">⌄</span>
       </button>
@@ -77,7 +88,11 @@
             <strong id="eventPanelTitle">Останні події</strong>
             <small id="lastUpdated">ще не оновлювалося</small>
           </div>
-          <button id="refreshBtn" class="text-btn" type="button">Оновити</button>
+          <div class="panel-actions">
+            <button id="hideVisibleBtn" class="text-btn" type="button" title="Прибрати всі події в поточному фільтрі лише на цьому пристрої">Прибрати</button>
+            <button id="restoreHiddenBtn" class="text-btn hidden" type="button">Повернути</button>
+            <button id="refreshBtn" class="text-btn" type="button">Оновити</button>
+          </div>
         </div>
         <div id="eventList" class="event-list"></div>
       </section>
@@ -100,12 +115,12 @@
       <button id="closeSettingsBtn" class="icon-btn" type="button" aria-label="Закрити">×</button>
     </div>
 
-    <label class="field-label" for="localitySearch">Пошук міста / села / селища</label>
+    <label class="field-label" for="localitySearch">Пошук адреси, міста або села</label>
     <div class="search-row">
-      <input id="localitySearch" class="text-input" type="search" autocomplete="off" placeholder="Наприклад: Чабани" />
+      <input id="localitySearch" class="text-input" type="search" autocomplete="street-address" placeholder="Київ, вул. Хрещатик, 1" />
       <button id="searchLocalityBtn" class="primary-btn" type="button">Знайти</button>
     </div>
-    <div id="searchStatus" class="hint">Вибір зберігається на цьому пристрої. Пошук виконується лише після «Знайти» / Enter через OpenStreetMap Nominatim; точний GPS постійно не передається.</div>
+    <div id="searchStatus" class="hint">Вибір зберігається лише на цьому пристрої. Пошук виконується після «Знайти» / Enter через OpenStreetMap Nominatim; точний GPS постійно не передається.</div>
     <div id="searchResults" class="search-results"></div>
 
     <div class="setting-row">

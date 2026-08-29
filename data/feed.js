@@ -42,6 +42,7 @@ export async function loadThreats(place, radiusKm = 25) {
   if (place?.oblast) params.set('oblast', place.oblast);
   if (place?.district) params.set('district', place.district);
   if (place?.hromada) params.set('hromada', place.hromada);
+  if (place?.locality) params.set('locality', place.locality);
   params.set('radius', Math.max(5, Math.min(100, Number(radiusKm) || 25)));
   const payload = await request(`/api/threats?${params}`);
   const items = Array.isArray(payload) ? payload : payload?.items;
@@ -51,6 +52,24 @@ export async function loadThreats(place, radiusKm = 25) {
     monitoring: payload?.monitoring || null,
     notice: payload?.notice || ''
   };
+}
+
+export async function loadAlerts() {
+  const payload = await request('/api/alerts', { cache: 'default' });
+  return {
+    updatedAt: payload?.updatedAt || null,
+    raions: Array.isArray(payload?.raions) ? payload.raions : [],
+    oblasts: Array.isArray(payload?.oblasts) ? payload.oblasts : [],
+    features: payload?.features?.type === 'FeatureCollection' && Array.isArray(payload.features.features)
+      ? payload.features : { type: 'FeatureCollection', features: [] },
+    attributionUrl: payload?.attributionUrl || 'https://neptun.in.ua/'
+  };
+}
+
+export async function loadUkraineOutline() {
+  const payload = await request('/api/map/ukraine', { cache: 'default' });
+  if (payload?.type !== 'FeatureCollection' || !Array.isArray(payload.features)) throw new Error('Контур України недоступний');
+  return { ...payload, attributionUrl: payload.attributionUrl || 'https://neptun.in.ua/' };
 }
 
 export async function searchPlaces(query) {

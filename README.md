@@ -1,17 +1,19 @@
-# RadarUa — Telegram Online 2.0
+# RadarUa — Telegram + NEPTUN 2.2
 
-RadarUa is a PWA for **near-realtime Telegram monitoring around a user-selected Ukrainian locality**. This release intentionally works **without alerts.in.ua / UkraineAlarm or any other air-alert API**.
+RadarUa is a PWA for **near-realtime Telegram monitoring around a user-selected Ukrainian locality**, with a visible NEPTUN air-alert layer. It intentionally does not use alerts.in.ua / UkraineAlarm.
 
 > **Safety:** the feed is informational and is not an official air-raid warning system. A point on the map is the centroid of a locality/region mentioned by a source. It is **not** a verified live coordinate or trajectory of an aircraft, missile or UAV. Absence of fresh Telegram messages does not mean the area is safe.
 
 ## What this release does
 
-- Choose and save your own city / town / village.
+- Search and save a city, village, street or house address.
 - Optional GPS → reverse-geocode to a locality; continuous live GPS is not sent to the backend.
 - Radius 5–100 km and **Only my area** mode.
 - Telegram event types: UAV, missile/ballistics, KAB, aviation, explosions/air defence, source-reported clear.
 - Realtime WebSocket from Cloudflare Durable Object to the PWA.
 - Cloudflare Cron scans the public web view of explicitly configured Telegram channels and the free NEPTUN snapshot every two minutes.
+- The map draws only currently active NEPTUN raion contours and shows the selected address's alert status; the alert layer is cached briefly in the Worker.
+- Filter events by Telegram / NEPTUN and hide individual events or the current filtered list locally. Hidden events can be restored and are never deleted from a source.
 - No Telegram API credentials, Telegram account/session or VPS. NEPTUN is an optional external read-only data source, clearly attributed in the interface.
 - Per-channel short-term context for sequences such as “UAV …” → “Course toward Vasylkiv”.
 - Scanner heartbeat and source-health state (`online / stale / offline`).
@@ -103,7 +105,7 @@ Commit to `main`. The included Pages workflow publishes only:
 
 Edit `SOURCE_ALLOWLIST` in `worker/wrangler.toml` with the public channel usernames, then run `npm run deploy`. The included configuration uses the selected Kyiv sources plus official channels. Cloudflare runs the cron schedule; no separate hosting service is needed.
 
-NEPTUN is enabled through `NEPTUN_API_URL` and needs no key. Keep the visible attribution link in the PWA, as required by its API terms.
+NEPTUN is enabled through `NEPTUN_API_URL`, `NEPTUN_ALERTS_URL` and `NEPTUN_RAIONS_GEOJSON_URL`; it needs no key. Keep the visible attribution link in the PWA, as required by its API terms.
 
 ## 4. Optional Web Push
 
@@ -124,8 +126,8 @@ For `VAPID_SUBJECT`, use a contact `mailto:` or HTTPS URL.
 
 Open the PWA and:
 
-1. Search manually by name (`Знайти` or Enter; no autocomplete).
-2. Pick the correct result.
+1. Search manually by place or address, for example `Київ, вул. Хрещатик, 1` (`Знайти` or Enter; no autocomplete).
+2. Pick the correct result. A selected address remains only in this browser's local storage.
 3. Choose radius, e.g. 25 km.
 4. Enable **Only my area**.
 5. Optionally enable Push.

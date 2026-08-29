@@ -1,6 +1,6 @@
 import { sendPushNotification } from '@mmmike/web-push/send';
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org';
 const GEOCODE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 const NOMINATIM_MIN_INTERVAL_MS = 1100;
@@ -13,6 +13,10 @@ const BRIDGE_STALE_MS = 5 * 60 * 1000;
 const PUBLIC_TELEGRAM_MAX_AGE_MS = 14 * 60 * 1000;
 const PUBLIC_TELEGRAM_MAX_MESSAGES = 28;
 const NEPTUN_TTL_MINUTES = 6;
+const NEPTUN_ALERTS_URL = 'https://neptun.in.ua/api/v1/alerts';
+const NEPTUN_RAIONS_GEOJSON_URL = 'https://neptun.in.ua/raions.geojson';
+const NEPTUN_OBLASTS_GEOJSON_URL = 'https://neptun.in.ua/oblasts.geojson';
+const ALERTS_CACHE_SECONDS = 20;
 const MAX_COLLECTED_EVENTS_PER_RUN = 36;
 const EVENT_TYPES = ['drone', 'missile', 'kab', 'aviation', 'explosion', 'clear'];
 
@@ -243,13 +247,18 @@ function inferPlaceType(address, result) {
 }
 function toPlace(result) {
   const a = result.address || {};
-  const name = a.city || a.town || a.village || a.municipality || a.hamlet || a.suburb || String(result.display_name || '').split(',')[0];
+  const locality = a.city || a.town || a.village || a.municipality || a.hamlet || a.suburb || '';
+  const street = a.road || a.pedestrian || a.residential || a.footway || '';
+  const house = a.house_number || '';
+  const addressName = [street, house].filter(Boolean).join(', ');
+  const name = addressName ? [addressName, locality].filter(Boolean).join(' · ') : (locality || String(result.display_name || '').split(',')[0]);
   const oblast = a.state || a.region || '';
   const district = a.county || a.district || '';
   const hromada = a.municipality || '';
   return {
     name: trimText(name, 120),
-    type: inferPlaceType(a, result),
+    locality: trimText(locality, 120),
+    type: addressName ? 'адреса' : inferPlaceType(a, result),
     lat: Number(result.lat),
     lon: Number(result.lon),
     oblast: trimText(oblast, 140),
@@ -263,7 +272,7 @@ function sanitizePlace(place) {
   if (!place || typeof place !== 'object') return null;
   const p = {
     name: trimText(place.name, 120), type: trimText(place.type, 30), oblast: trimText(place.oblast, 140),
-    district: trimText(place.district, 140), hromada: trimText(place.hromada, 140)
+    district: trimText(place.district, 140), hromada: trimText(place.hromada, 140), locality: trimText(place.locality, 120)
   };
   if (Number.isFinite(Number(place.lat))) p.lat = Number(place.lat);
   if (Number.isFinite(Number(place.lon))) p.lon = Number(place.lon);
@@ -274,7 +283,8 @@ function placeFromUrl(url) {
     name: trimText(url.searchParams.get('place'), 120),
     oblast: trimText(url.searchParams.get('oblast'), 140),
     district: trimText(url.searchParams.get('district'), 140),
-    hromada: trimText(url.searchParams.get('hromada'), 140)
+    hromada: trimText(url.searchParams.get('hromada'), 140),
+    locality: trimText(url.searchParams.get('locality'), 120)
   };
   if (Number.isFinite(Number(url.searchParams.get('lat')))) p.lat = Number(url.searchParams.get('lat'));
   if (Number.isFinite(Number(url.searchParams.get('lon')))) p.lon = Number(url.searchParams.get('lon'));
@@ -287,7 +297,7 @@ function monitoringApplies(event, place, radiusKm) {
     return haversineKm(place.lat, place.lon, event.lat, event.lon) <= clamp(Number(radiusKm || 25), 5, 100);
   }
   const hay = [event.meta?.location, event.meta?.oblast, event.meta?.district, event.meta?.hromada, event.title, event.detail].filter(Boolean);
-  const needles = [place.name, place.hromada, place.district, place.oblast].filter(Boolean);
+  const needles = [place.locality, place.name, place.hromada, place.district, place.oblast].filter(Boolean);
   return needles.some((needle) => hay.some((x) => sameish(x, needle)));
 }
 function getHub(env) {
@@ -310,7 +320,7 @@ async function hubStatus(env) {
   const response = await getHub(env).fetch('https://hub/status');
   return response.ok ? response.json() : { state: 'offline', bridges: [], channels: [], lastHeartbeatAt: null };
 }
-async function threatsResponse(request, env) {
+async function threatsResponse(request, env, ctx) {
   const url = new URL(request.url);
   const place = placeFromUrl(url);
   const radius = clamp(Number(url.searchParams.get('radius') || 25), 5, 100);
@@ -318,6 +328,9 @@ async function threatsResponse(request, env) {
   const payload = response.ok ? await response.json() : { items: [] };
   const items = Array.isArray(payload.items) ? payload.items : [];
   const status = await hubStatus(env);
+  // Cron is the normal collector. A page visit safely nudges it back to life if a
+  // scheduled invocation was delayed, without turning ordinary API reads into polling.
+  if (status.state !== 'online') ctx.waitUntil(scanSources(env));
   const localCount = place?.name ? items.filter((event) => monitoringApplies(event, place, radius)).length : null;
   return json({
     items,
@@ -326,6 +339,73 @@ async function threatsResponse(request, env) {
     monitoring: { ...status, localCount, sourceMode: 'public-telegram-web+neptun-api' },
     notice: 'Моніторинг публічних Telegram-каналів і NEPTUN не є офіційною системою оповіщення. Точки можуть бути приблизними; для подій рівня області точка не показується.'
   }, 200, env, request, { 'Cache-Control': 'no-store' });
+}
+
+function neptunAlertUrls(env) {
+  return {
+    alerts: trimText(env.NEPTUN_ALERTS_URL || NEPTUN_ALERTS_URL, 500),
+    raions: trimText(env.NEPTUN_RAIONS_GEOJSON_URL || NEPTUN_RAIONS_GEOJSON_URL, 500),
+    oblasts: trimText(env.NEPTUN_OBLASTS_GEOJSON_URL || NEPTUN_OBLASTS_GEOJSON_URL, 500)
+  };
+}
+
+async function ukraineOutlineResponse(request, env, ctx) {
+  const cache = caches.default;
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  try {
+    const response = await fetch(neptunAlertUrls(env).oblasts, {
+      headers: { Accept: 'application/geo+json, application/json' },
+      cf: { cacheTtl: 86400, cacheEverything: true }
+    });
+    if (!response.ok) throw new Error(`neptun_oblasts_${response.status}`);
+    const data = await response.json();
+    const features = Array.isArray(data?.features) ? data.features.slice(0, 40) : [];
+    const result = json({ type: 'FeatureCollection', features, attributionUrl: 'https://neptun.in.ua/' }, 200, env, request, {
+      'Cache-Control': 'public, max-age=86400, s-maxage=86400'
+    });
+    ctx.waitUntil(cache.put(request, result.clone()));
+    return result;
+  } catch (error) {
+    console.error('Ukraine outline failed', error?.message || error);
+    return json({ error: 'ukraine_outline_unavailable', message: 'Контур України тимчасово недоступний' }, 502, env, request, { 'Cache-Control': 'no-store' });
+  }
+}
+
+async function alertsResponse(request, env, ctx) {
+  const cache = caches.default;
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  const urls = neptunAlertUrls(env);
+  try {
+    const [alertsResponse, boundariesResponse] = await Promise.all([
+      fetch(urls.alerts, { headers: { Accept: 'application/json' }, cf: { cacheTtl: ALERTS_CACHE_SECONDS, cacheEverything: true } }),
+      fetch(urls.raions, { headers: { Accept: 'application/geo+json, application/json' }, cf: { cacheTtl: 86400, cacheEverything: true } })
+    ]);
+    if (!alertsResponse.ok || !boundariesResponse.ok) throw new Error(`neptun_alerts_${alertsResponse.status}_${boundariesResponse.status}`);
+    const [alerts, boundaries] = await Promise.all([alertsResponse.json(), boundariesResponse.json()]);
+    const raions = Array.isArray(alerts?.raions) ? alerts.raions.slice(0, 180).map((item) => ({
+      key: trimText(item?.key, 120), name: trimText(item?.name, 180), oblast: trimText(item?.oblast, 180), since: safeTimestamp(item?.since)
+    })).filter((item) => item.key && item.name) : [];
+    const oblasts = Array.isArray(alerts?.oblasts) ? alerts.oblasts.slice(0, 40).map((item) => ({
+      key: trimText(item?.key, 120), name: trimText(item?.name, 180), oblast: trimText(item?.oblast, 180), since: safeTimestamp(item?.since)
+    })).filter((item) => item.key && item.name) : [];
+    const activeKeys = new Set(raions.map((item) => item.key));
+    const features = Array.isArray(boundaries?.features)
+      ? boundaries.features.filter((feature) => activeKeys.has(trimText(feature?.properties?.key, 120))).slice(0, 180)
+      : [];
+    const response = json({
+      updatedAt: safeTimestamp(alerts?.updatedAt), raions, oblasts,
+      features: { type: 'FeatureCollection', features },
+      source: 'NEPTUN',
+      attributionUrl: 'https://neptun.in.ua/'
+    }, 200, env, request, { 'Cache-Control': `public, max-age=${ALERTS_CACHE_SECONDS}, s-maxage=${ALERTS_CACHE_SECONDS}` });
+    ctx.waitUntil(cache.put(request, response.clone()));
+    return response;
+  } catch (error) {
+    console.error('NEPTUN alert layer failed', error?.message || error);
+    return json({ error: 'alert_layer_unavailable', message: 'Статус тривоги тимчасово недоступний' }, 502, env, request, { 'Cache-Control': 'no-store' });
+  }
 }
 function pushEnabled(env) {
   return Boolean(env.SUBSCRIPTIONS && env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT);
@@ -856,7 +936,9 @@ export default {
     }
     if (url.pathname === '/api/status' && request.method === 'GET') return json(await hubStatus(env), 200, env, request, { 'Cache-Control': 'no-store' });
     if (url.pathname === '/api/places' && request.method === 'GET') return searchPlaces(request, env);
-    if (url.pathname === '/api/threats' && request.method === 'GET') return threatsResponse(request, env);
+    if (url.pathname === '/api/threats' && request.method === 'GET') return threatsResponse(request, env, ctx);
+    if (url.pathname === '/api/alerts' && request.method === 'GET') return alertsResponse(request, env, ctx);
+    if (url.pathname === '/api/map/ukraine' && request.method === 'GET') return ukraineOutlineResponse(request, env, ctx);
     if (url.pathname === '/api/monitoring/events' && request.method === 'POST') return ingestEvent(request, env, ctx);
     if (url.pathname === '/api/monitoring/events' && request.method === 'GET') {
       const response = await getHub(env).fetch('https://hub/events');

@@ -8,6 +8,9 @@ ALLOWED_ORIGIN = "https://xott69.github.io"
 SOURCE_ALLOWLIST = "nebo_raketa,tviy_kyiv,airalarm_kyiv,kiev_kyiv,kyiv_allerts,kpszsu,va_kyiv,dsns_kyiv"
 # Free, public, read-only aggregate feed. It requires visible attribution in the PWA.
 NEPTUN_API_URL = "https://neptun.in.ua/api/v1/threats"
+NEPTUN_ALERTS_URL = "https://neptun.in.ua/api/v1/alerts"
+NEPTUN_RAIONS_GEOJSON_URL = "https://neptun.in.ua/raions.geojson"
+NEPTUN_OBLASTS_GEOJSON_URL = "https://neptun.in.ua/oblasts.geojson"
 
 # The Worker polls the public web view of each allowlisted Telegram channel.
 # No Telegram API credentials, user account or separate bridge host are required.

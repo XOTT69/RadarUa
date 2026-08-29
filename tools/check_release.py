@@ -52,13 +52,13 @@ try:
 except Exception as exc:
     fail(f"DOM consistency check failed: {exc}")
 
-# Telegram-only runtime must not silently regain an air-alert API dependency.
+# The legacy Alerts.in.ua / UkraineAlarm integration must not silently return.
 runtime_paths = [
     ROOT / "app.js", ROOT / "data/feed.js", ROOT / "sw.js",
     ROOT / "worker/src/index.js", ROOT / "worker/wrangler.toml",
     ROOT / "telegram-bridge/bridge.py", ROOT / "telegram-bridge/parser.py",
 ]
-stale = re.compile(r"alerts\.in\.ua|UkraineAlarm|ALERTS_TOKEN|ALERTS_URL", re.I)
+stale = re.compile(r"alerts\.in\.ua|UkraineAlarm|ALERTS_TOKEN|(?:^|[^A-Z_])ALERTS_URL", re.I)
 for path in runtime_paths:
     text = path.read_text(encoding="utf-8", errors="ignore")
     if stale.search(text):
