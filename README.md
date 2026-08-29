@@ -11,8 +11,8 @@ RadarUa is a PWA for **near-realtime Telegram monitoring around a user-selected 
 - Radius 5–100 km and **Only my area** mode.
 - Telegram event types: UAV, missile/ballistics, KAB, aviation, explosions/air defence, source-reported clear.
 - Realtime WebSocket from Cloudflare Durable Object to the PWA.
-- Cloudflare Cron scans the public web view of explicitly configured Telegram channels every two minutes.
-- No Telegram API credentials, Telegram account/session, VPS or third-party air-alert API.
+- Cloudflare Cron scans the public web view of explicitly configured Telegram channels and the free NEPTUN snapshot every two minutes.
+- No Telegram API credentials, Telegram account/session or VPS. NEPTUN is an optional external read-only data source, clearly attributed in the interface.
 - Per-channel short-term context for sequences such as “UAV …” → “Course toward Vasylkiv”.
 - Scanner heartbeat and source-health state (`online / stale / offline`).
 - Server-side geocoding cache and <=1 Nominatim request/sec.
@@ -29,6 +29,10 @@ Telegram public channel pages (explicitly configured)
             ▼
      Cloudflare Worker + Cron
   parser + Durable Object + dedupe
+            ▲
+            │ free read-only snapshot
+            │
+     NEPTUN public API
      │      │       │
  geocode   WS      Push
      │      │       │
@@ -40,7 +44,7 @@ Telegram public channel pages (explicitly configured)
 
 ## Important: how the free source collector works
 
-The Worker reads `https://t.me/s/<public-channel>` for only the explicitly allowlisted public channels. This is not a Telegram API connection and does not require a Telegram account. It can miss messages when Telegram changes its public page format, blocks a request, or a channel is made private; therefore it remains informational, not an official alert system. The expected polling delay is up to a few minutes.
+The Worker reads `https://t.me/s/<public-channel>` for only the explicitly allowlisted public channels and also consumes the free, keyless NEPTUN snapshot. This is not a Telegram API connection and does not require a Telegram account. Telegram page collection can miss messages when Telegram changes its public page format, blocks a request, or a channel is made private; NEPTUN is a separate aggregate source. Both remain informational, not official alert systems. The expected polling delay is up to a few minutes.
 
 ## 1. Deploy the Cloudflare Worker
 
@@ -98,6 +102,8 @@ Commit to `main`. The included Pages workflow publishes only:
 ## 3. Configure Telegram source polling
 
 Edit `SOURCE_ALLOWLIST` in `worker/wrangler.toml` with the public channel usernames, then run `npm run deploy`. The included configuration uses the selected Kyiv sources plus official channels. Cloudflare runs the cron schedule; no separate hosting service is needed.
+
+NEPTUN is enabled through `NEPTUN_API_URL` and needs no key. Keep the visible attribution link in the PWA, as required by its API terms.
 
 ## 4. Optional Web Push
 

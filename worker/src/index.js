@@ -12,6 +12,8 @@ const BRIDGE_ONLINE_MS = 90 * 1000;
 const BRIDGE_STALE_MS = 5 * 60 * 1000;
 const PUBLIC_TELEGRAM_MAX_AGE_MS = 14 * 60 * 1000;
 const PUBLIC_TELEGRAM_MAX_MESSAGES = 28;
+const NEPTUN_TTL_MINUTES = 6;
+const MAX_COLLECTED_EVENTS_PER_RUN = 36;
 const EVENT_TYPES = ['drone', 'missile', 'kab', 'aviation', 'explosion', 'clear'];
 
 const PUBLIC_TYPE_PATTERNS = [
@@ -169,7 +171,7 @@ function publicThreatPayloads(message, inheritedType) {
   };
 }
 
-export const publicTelegramParser = { parsePublicTelegramPage, publicThreatPayloads };
+export const publicTelegramParser = { parsePublicTelegramPage, publicThreatPayloads, neptunPayload };
 
 function normAdmin(v) {
   return norm(v)
@@ -321,8 +323,8 @@ async function threatsResponse(request, env) {
     items,
     localityStatus: null,
     generatedAt: new Date().toISOString(),
-    monitoring: { ...status, localCount, sourceMode: 'public-telegram-web' },
-    notice: 'Моніторинг публічних Telegram-каналів не є офіційною системою оповіщення. Точки на карті — центри згаданих населених пунктів, не координати цілей.'
+    monitoring: { ...status, localCount, sourceMode: 'public-telegram-web+neptun-api' },
+    notice: 'Моніторинг публічних Telegram-каналів і NEPTUN не є офіційною системою оповіщення. Точки можуть бути приблизними; для подій рівня області точка не показується.'
   }, 200, env, request, { 'Cache-Control': 'no-store' });
 }
 function pushEnabled(env) {
@@ -403,16 +405,16 @@ async function pushMonitoringEvent(env, event) {
     });
   }
 }
-async function processMonitoringEvent(env, raw) {
+async function processMonitoringEvent(env, raw, { trustedSource = false } = {}) {
   if (!EVENT_TYPES.includes(raw?.type)) return { status: 400, result: { error: 'unsupported_event_type' } };
-  if (!sourceAllowed(env, raw)) return { status: 403, result: { error: 'source_not_allowed' } };
+  if (!trustedSource && !sourceAllowed(env, raw)) return { status: 403, result: { error: 'source_not_allowed' } };
 
   const location = trimText(raw.location || raw.meta?.location, 180);
   const region = canonicalRegion(location);
   if (region) raw.meta = { ...(raw.meta || {}), oblast: region, locationScope: 'region' };
   // An oblast is an administrative match, not a point. Do not geocode it to an
   // oblast centroid: that would look like a claimed target position on the map.
-  if (location && !region && !(Number.isFinite(Number(raw.lat)) && Number.isFinite(Number(raw.lon)))) {
+  if (location && !raw.meta?.areaOnly && !region && !(Number.isFinite(Number(raw.lat)) && Number.isFinite(Number(raw.lon)))) {
     const context = trimText(raw.meta?.oblast, 120);
     const query = region || (context ? `${location}, ${context}, Україна` : `${location}, Україна`);
     const places = await hubGeocode(env, query);
@@ -454,27 +456,27 @@ async function bridgeHeartbeat(request, env) {
   return json(result, response.status, env, request, { 'Cache-Control': 'no-store' });
 }
 
-async function savePublicScannerHeartbeat(env, channels, healthy, detail = '') {
+async function saveCollectorHeartbeat(env, channels, healthy, detail = '') {
   const body = {
     bridgeId: 'cloudflare-public-telegram', version: VERSION,
     startedAt: null, queueDepth: 0, telegramConnected: healthy,
-    sourceMode: 'public_telegram_web', detail,
-    channels: channels.map((channel) => ({
-      id: channel, name: `@${channel}`, title: `Telegram @${channel}`, username: channel,
-      lastMessageAt: null, lastMessageId: null
-    }))
+    sourceMode: 'public_telegram_web+neptun_api', detail,
+    channels: channels.map((channel) => channel === 'neptun'
+      ? { id: 'neptun', name: 'NEPTUN', title: 'NEPTUN public API', username: null, lastMessageAt: null, lastMessageId: null }
+      : { id: channel, name: `@${channel}`, title: `Telegram @${channel}`, username: channel, lastMessageAt: null, lastMessageId: null })
   };
   await getHub(env).fetch(new Request('https://hub/heartbeat', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }));
 }
 
-async function scanPublicTelegram(env) {
+async function scanPublicTelegram(env, maxEvents = MAX_COLLECTED_EVENTS_PER_RUN) {
   const channels = publicTelegramChannels(env);
   let healthyChannels = 0;
   let parsedEvents = 0;
   const now = Date.now();
   for (const channel of channels) {
+    if (parsedEvents >= maxEvents) break;
     try {
       const response = await fetch(`https://t.me/s/${encodeURIComponent(channel)}`, {
         headers: { 'User-Agent': 'RadarUa-Public-Monitor/2.1 (+https://github.com/XOTT69/RadarUa)', 'Accept-Language': 'uk' },
@@ -490,6 +492,7 @@ async function scanPublicTelegram(env) {
         if (type === 'clear') inheritedType = null;
         if (age < -5 * 60_000 || age > PUBLIC_TELEGRAM_MAX_AGE_MS) continue;
         for (const payload of payloads) {
+          if (parsedEvents >= maxEvents) break;
           const outcome = await processMonitoringEvent(env, payload);
           if (outcome.status < 300 && outcome.result?.event?.isNew) await pushMonitoringEvent(env, outcome.result.event);
           if (outcome.status < 300) parsedEvents += 1;
@@ -499,8 +502,76 @@ async function scanPublicTelegram(env) {
       console.error(`Public Telegram scan failed for @${channel}`, error?.message || error);
     }
   }
-  await savePublicScannerHeartbeat(env, channels, healthyChannels > 0, `${healthyChannels}/${channels.length} channel(s) reachable; ${parsedEvents} events processed`);
-  return { healthyChannels, channelCount: channels.length, parsedEvents };
+  return { channels, healthyChannels, channelCount: channels.length, parsedEvents };
+}
+
+function neptunType(value) {
+  const types = { uav: 'drone', fpv: 'drone', recon: 'drone', missile: 'missile', ballistic: 'missile', kab: 'kab', mig31k: 'aviation' };
+  return types[String(value || '').toLowerCase()] || null;
+}
+
+function neptunPayload(threat) {
+  const type = neptunType(threat?.type);
+  if (!type || threat?.status === 'resolved' || !threat?.id) return null;
+  const areaOnly = threat.areaOnly === true;
+  const hasPoint = !areaOnly && Number.isFinite(Number(threat.lat)) && Number.isFinite(Number(threat.lon));
+  const location = trimText(threat.locality || threat.region || threat.district, 180);
+  const region = trimText(threat.region, 160);
+  return {
+    id: `neptun-${trimText(threat.id, 160)}`,
+    type,
+    title: trimText(threat.title || PUBLIC_LABELS[type], 180),
+    detail: trimText(threat.explanationShort || threat.title || 'Подія з NEPTUN', 900),
+    location,
+    ...(hasPoint ? { lat: Number(threat.lat), lon: Number(threat.lon) } : {}),
+    course: Number.isFinite(Number(threat.heading)) ? Number(threat.heading) : null,
+    confidence: ['low', 'medium', 'high'].includes(threat.confidenceLevel) ? threat.confidenceLevel : 'unknown',
+    source: 'NEPTUN',
+    timestamp: safeTimestamp(threat.updatedAt || threat.confirmedAt),
+    ttlMinutes: NEPTUN_TTL_MINUTES,
+    meta: {
+      location, oblast: region, district: trimText(threat.district, 160),
+      sourceMessageId: trimText(threat.id, 160), sourceUrl: 'https://neptun.in.ua/',
+      sourceChannelId: 'neptun', sourceChannel: 'NEPTUN', sourceAccess: 'neptun_api',
+      parserVersion: VERSION, count: Number.isFinite(Number(threat.count)) ? Number(threat.count) : null,
+      upstreamSourceCount: clamp(Number(threat.sourceCount || 1), 1, 99),
+      approximatePoint: Boolean(hasPoint && threat.positionQuality !== 'confirmed'),
+      coordinateMeaning: areaOnly ? '' : `neptun_${trimText(threat.positionQuality || 'unknown', 20)}`,
+      areaOnly, locationScope: '',
+      advisory: threat.advisory === true, uncertaintyKm: Number.isFinite(Number(threat.uncertaintyKm)) ? Number(threat.uncertaintyKm) : null,
+      locationInterpretation: areaOnly ? 'region_only_no_marker' : 'neptun_aggregated_threat_position'
+    }
+  };
+}
+
+async function scanNeptun(env, maxEvents = MAX_COLLECTED_EVENTS_PER_RUN) {
+  const apiUrl = trimText(env.NEPTUN_API_URL || 'https://neptun.in.ua/api/v1/threats', 500);
+  try {
+    const response = await fetch(apiUrl, { headers: { 'User-Agent': 'RadarUa/2.1 (+https://github.com/XOTT69/RadarUa)', 'Accept': 'application/json' }, cf: { cacheTtl: 0, cacheEverything: false } });
+    if (!response.ok) throw new Error(`neptun_http_${response.status}`);
+    const data = await response.json();
+    let processed = 0;
+    for (const rawThreat of Array.isArray(data?.threats) ? data.threats : []) {
+      if (processed >= maxEvents) break;
+      const payload = neptunPayload(rawThreat);
+      if (!payload) continue;
+      const outcome = await processMonitoringEvent(env, payload, { trustedSource: true });
+      if (outcome.status < 300 && outcome.result?.event?.isNew) await pushMonitoringEvent(env, outcome.result.event);
+      if (outcome.status < 300) processed += 1;
+    }
+    return { healthy: true, processed };
+  } catch (error) {
+    console.error('NEPTUN scan failed', error?.message || error);
+    return { healthy: false, processed: 0 };
+  }
+}
+
+async function scanSources(env) {
+  const neptun = await scanNeptun(env, 30);
+  const telegram = await scanPublicTelegram(env, Math.max(0, MAX_COLLECTED_EVENTS_PER_RUN - neptun.processed));
+  const channels = [...telegram.channels, 'neptun'];
+  const healthy = telegram.healthyChannels > 0 || neptun.healthy;
+  await saveCollectorHeartbeat(env, channels, healthy, `${telegram.healthyChannels}/${telegram.channelCount} Telegram channel(s); NEPTUN ${neptun.healthy ? 'reachable' : 'unreachable'}; ${telegram.parsedEvents + neptun.processed} events processed`);
 }
 
 export class RadarHub {
@@ -529,6 +600,7 @@ export class RadarHub {
     const sourceMessageId = trimText(raw.meta?.sourceMessageId, 160);
     const sourceUrl = trimText(raw.meta?.sourceUrl, 500);
     const location = trimText(raw.meta?.location || raw.location, 180);
+    const upstreamSourceCount = clamp(Number(raw.meta?.upstreamSourceCount || 1), 1, 99);
     return {
       id: trimText(raw.id || crypto.randomUUID(), 180),
       type,
@@ -561,8 +633,8 @@ export class RadarHub {
         coordinateMeaning: trimText(raw.meta?.coordinateMeaning || (raw.lat != null ? 'named_locality_centroid' : ''), 80),
         geocodedPlace: raw.meta?.geocodedPlace || null,
         sources: source ? [{ name: source, messageId: sourceMessageId, url: sourceUrl || null }] : [],
-        sourceCount: source ? 1 : 0,
-        corroborated: false
+        sourceCount: source ? upstreamSourceCount : 0,
+        corroborated: upstreamSourceCount > 1
       }
     };
   }
@@ -581,7 +653,10 @@ export class RadarHub {
       if (key) byKey.set(key, src);
     }
     const sources = [...byKey.values()].slice(0, 12);
-    const sourceCount = new Set(sources.map((x) => x.name).filter(Boolean)).size || sources.length;
+    const sourceCount = Math.max(
+      new Set(sources.map((x) => x.name).filter(Boolean)).size || sources.length,
+      Number(existing.meta?.sourceCount || 0), Number(incoming.meta?.sourceCount || 0)
+    );
     const latest = new Date(incoming.timestamp) >= new Date(existing.timestamp) ? incoming : existing;
     return {
       ...existing,
@@ -713,7 +788,7 @@ export class RadarHub {
       channelCount: channels.length,
       queueDepth: bridges.reduce((sum, b) => sum + Number(b.queueDepth || 0), 0),
       telegramConnected,
-      sourceMode: bridges.find((b) => b.sourceMode === 'public_telegram_web')?.sourceMode || 'telegram_api',
+      sourceMode: bridges.find((b) => b.sourceMode === 'public_telegram_web+neptun_api')?.sourceMode || 'telegram_api',
       bridges,
       channels
     };
@@ -774,7 +849,7 @@ export default {
 
     if (url.pathname === '/health' && request.method === 'GET') {
       return json({
-        ok: true, service: 'radarua-api', version: VERSION, sourceMode: 'public-telegram-web',
+        ok: true, service: 'radarua-api', version: VERSION, sourceMode: 'public-telegram-web+neptun-api',
         ingestTokenConfigured: Boolean(env.INGEST_TOKEN), realtime: Boolean(env.RADAR_HUB), pushConfigured: pushEnabled(env),
         monitoring: await hubStatus(env)
       }, 200, env, request, { 'Cache-Control': 'no-store' });
@@ -797,6 +872,6 @@ export default {
     return json({ error: 'not_found' }, 404, env, request);
   },
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(scanPublicTelegram(env));
+    ctx.waitUntil(scanSources(env));
   }
 };

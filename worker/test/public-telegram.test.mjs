@@ -28,3 +28,15 @@ test('converts a public post to a safe normalized event', () => {
   assert.equal(result.payloads[0].location, 'Бровари');
   assert.equal(result.payloads[0].meta.sourceUrl, 'https://t.me/airAlarm_Kyiv/123');
 });
+
+test('keeps NEPTUN area-only data off the map', () => {
+  const event = publicTelegramParser.neptunPayload({
+    id: 'trk_test', type: 'ballistic', title: 'Балістика', region: 'Одеська область',
+    locality: 'Одеська область', lat: 46.48, lon: 30.73, areaOnly: true,
+    sourceCount: 4, updatedAt: '2026-08-29T05:00:00Z', status: 'active'
+  });
+  assert.equal(event.type, 'missile');
+  assert.equal(event.lat, undefined);
+  assert.equal(event.meta.areaOnly, true);
+  assert.equal(event.meta.upstreamSourceCount, 4);
+});

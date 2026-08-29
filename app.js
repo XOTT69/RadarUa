@@ -96,10 +96,11 @@ function visibleThreats() {
 }
 function feedStateText() {
   const s = state.monitoringStatus;
-  if (!s) return 'стан Telegram ще не отримано';
-  if (s.state === 'online') return `Telegram онлайн · ${s.channelCount || 0} джерел`;
-  if (s.state === 'stale') return `Telegram давно не оновлювався · ${s.lastHeartbeatAt ? formatAge(s.lastHeartbeatAt) : ''}`;
-  return 'Telegram-потік офлайн або ще не запущений';
+  const label = s?.sourceMode?.includes('neptun_api') ? 'Джерела + NEPTUN' : 'Telegram';
+  if (!s) return `стан ${label} ще не отримано`;
+  if (s.state === 'online') return `${label} онлайн · ${s.channelCount || 0} джерел`;
+  if (s.state === 'stale') return `${label} давно не оновлювався · ${s.lastHeartbeatAt ? formatAge(s.lastHeartbeatAt) : ''}`;
+  return `${label} недоступні або ще не запущені`;
 }
 function renderFeedHealth() {
   const s = state.monitoringStatus;
@@ -124,16 +125,16 @@ function renderHome() {
   const localCount = state.settings.monitoring ? state.threats.filter(isThreatRelevant).length : 0;
   const s = state.monitoringStatus;
   if (!state.settings.monitoring) {
-    $('localityStatus').textContent = 'Telegram-моніторинг вимкнений у налаштуваннях';
+    $('localityStatus').textContent = 'Моніторинг вимкнений у налаштуваннях';
     $('localityStatusDot').className = 'locality-status-dot';
   } else if (s?.state === 'online') {
-    $('localityStatus').textContent = localCount ? `${localCount} свіжих подій у радіусі ${state.settings.radiusKm} км · Telegram онлайн` : `Свіжих повідомлень у радіусі ${state.settings.radiusKm} км не знайдено · це не означає «безпечно»`;
+    $('localityStatus').textContent = localCount ? `${localCount} свіжих подій у радіусі ${state.settings.radiusKm} км · джерела онлайн` : `Свіжих повідомлень у радіусі ${state.settings.radiusKm} км не знайдено · це не означає «безпечно»`;
     $('localityStatusDot').className = 'locality-status-dot online';
   } else if (s?.state === 'stale') {
     $('localityStatus').textContent = `Дані застаріли · останній heartbeat ${s.lastHeartbeatAt ? formatAge(s.lastHeartbeatAt) : 'невідомо коли'}`;
     $('localityStatusDot').className = 'locality-status-dot stale';
   } else {
-    $('localityStatus').textContent = s ? 'Telegram-потік недоступний — дані можуть бути неповними' : ([home.hromada, home.district, home.oblast].filter(Boolean).join(' · ') || 'Збережено');
+    $('localityStatus').textContent = s ? 'Потік даних недоступний — дані можуть бути неповними' : ([home.hromada, home.district, home.oblast].filter(Boolean).join(' · ') || 'Збережено');
     $('localityStatusDot').className = s ? 'locality-status-dot danger' : 'locality-status-dot';
   }
   if (Number.isFinite(home.lat) && Number.isFinite(home.lon)) {
@@ -154,7 +155,7 @@ function renderMarkers() {
     if (threat.lat == null || threat.lon == null) continue;
     const marker = L.marker([threat.lat, threat.lon], { icon: markerIcon(threat) }).addTo(state.map);
     const approx = threat.meta?.approximatePoint ? '<p><b>Приблизна прив’язка:</b> центр згаданого населеного пункту, не координата цілі.</p>' : '';
-    const sourceUrl = /^https:\/\/t\.me\//.test(threat.meta?.sourceUrl || '') ? `<a href="${escapeHtml(threat.meta.sourceUrl)}" target="_blank" rel="noopener noreferrer">джерело</a>` : escapeHtml(threat.source);
+    const sourceUrl = /^(https:\/\/t\.me\/|https:\/\/neptun\.in\.ua\/)/.test(threat.meta?.sourceUrl || '') ? `<a href="${escapeHtml(threat.meta.sourceUrl)}" target="_blank" rel="noopener noreferrer">джерело</a>` : escapeHtml(threat.source);
     marker.bindPopup(`<div class="popup"><strong>${escapeHtml(threat.title)}</strong><p>${escapeHtml(threat.detail)}</p>${approx}<small>${sourceUrl} · ${formatAge(threat.timestamp)}</small></div>`);
     state.markers.set(threat.id, marker);
   }
@@ -167,7 +168,7 @@ function renderCounts() {
   $('countAll').textContent = pool.length;
   for (const type of Object.keys(counts)) $(`count${type[0].toUpperCase()}${type.slice(1)}`).textContent = counts[type];
   $('eventCount').textContent = visibleThreats().length;
-  $('eventPanelTitle').textContent = state.settings.onlyMine && state.home ? `Telegram · ${state.home.name}` : 'Останні Telegram-події';
+  $('eventPanelTitle').textContent = state.settings.onlyMine && state.home ? `Події · ${state.home.name}` : 'Останні події';
 }
 function renderEvents() {
   const items = [...visibleThreats()].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -225,7 +226,7 @@ async function refreshThreats({ silent = false } = {}) {
   if (!apiReady()) {
     setConnection('потрібен URL Worker'); state.threats = []; state.monitoringStatus = null; renderAll(); return;
   }
-  if (!silent) setConnection('оновлення Telegram…');
+  if (!silent) setConnection('оновлення джерел…');
   try {
     const result = await loadThreats(state.home, state.settings.radiusKm);
     await maybeNotifyNew(result.items);
@@ -234,10 +235,10 @@ async function refreshThreats({ silent = false } = {}) {
     state.initialized = true;
     renderAll();
     $('lastUpdated').textContent = `оновлено ${new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
-    const sourceLabel = state.monitoringStatus?.sourceMode === 'public_telegram_web' ? 'Публічні Telegram-канали' : 'Telegram';
+    const sourceLabel = state.monitoringStatus?.sourceMode?.includes('neptun_api') ? 'Telegram + NEPTUN' : (state.monitoringStatus?.sourceMode === 'public_telegram_web' ? 'Публічні Telegram-канали' : 'Telegram');
     if (state.monitoringStatus?.state === 'online') setConnection(state.wsConnected ? `${sourceLabel} · realtime` : `${sourceLabel} · онлайн`);
     else if (state.monitoringStatus?.state === 'stale') setConnection(`${sourceLabel} · дані застаріли`);
-    else setConnection('Telegram · потік офлайн');
+    else setConnection(`${sourceLabel} · потік офлайн`);
   } catch (error) {
     console.error(error); setConnection('помилка backend'); if (!silent) showToast(error.message || 'Не вдалося оновити дані');
   }
@@ -340,7 +341,7 @@ function connectRealtime() {
   const url = streamUrl(); if (!url) return;
   try {
     const ws = new WebSocket(url); state.ws = ws;
-    ws.addEventListener('open', () => { state.wsConnected = true; setConnection('Telegram · realtime'); renderFeedHealth(); });
+    ws.addEventListener('open', () => { state.wsConnected = true; setConnection('джерела · realtime'); renderFeedHealth(); });
     ws.addEventListener('message', async (event) => {
       let payload; try { payload = JSON.parse(event.data); } catch { return; }
       if (payload?.type === 'hello' && payload.status) { state.monitoringStatus = payload.status; renderAll(); return; }

@@ -1,11 +1,13 @@
 # RadarUa Worker — public Telegram mode
 
-Cloudflare Worker + Cron reads the public web view of selected Telegram channels, parses recent posts, deduplicates them, geocodes named localities, exposes realtime WebSocket/API to the PWA and optionally sends Web Push.
+Cloudflare Worker + Cron reads the public web view of selected Telegram channels plus the free NEPTUN snapshot, deduplicates them, geocodes named localities, exposes realtime WebSocket/API to the PWA and optionally sends Web Push.
 
 **No alerts.in.ua / UkraineAlarm key is required in this version.**
 
 ## Source allowlist
 Set `SOURCE_ALLOWLIST` in `wrangler.toml` to public Telegram usernames (comma-separated). The scheduled scanner reads only these public `t.me/s/<username>` pages. No Telegram credentials or separate bridge host are needed.
+
+`NEPTUN_API_URL` is a public, keyless read-only API. The PWA must keep a visible NEPTUN attribution link when this integration is enabled.
 
 ## Required
 1. Create KV for push subscriptions (even if push is not configured yet):

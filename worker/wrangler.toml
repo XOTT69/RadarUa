@@ -6,6 +6,8 @@ compatibility_date = "2026-08-28"
 ALLOWED_ORIGIN = "https://xott69.github.io"
 # Explicit Telegram sources selected for Kyiv monitoring. The ingest endpoint rejects others.
 SOURCE_ALLOWLIST = "nebo_raketa,tviy_kyiv,airalarm_kyiv,kiev_kyiv,kyiv_allerts,kpszsu,va_kyiv,dsns_kyiv"
+# Free, public, read-only aggregate feed. It requires visible attribution in the PWA.
+NEPTUN_API_URL = "https://neptun.in.ua/api/v1/threats"
 
 # The Worker polls the public web view of each allowlisted Telegram channel.
 # No Telegram API credentials, user account or separate bridge host are required.
