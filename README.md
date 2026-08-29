@@ -11,12 +11,10 @@ RadarUa is a PWA for **near-realtime Telegram monitoring around a user-selected 
 - Radius 5–100 km and **Only my area** mode.
 - Telegram event types: UAV, missile/ballistics, KAB, aviation, explosions/air defence, source-reported clear.
 - Realtime WebSocket from Cloudflare Durable Object to the PWA.
-- Telegram bridge using an authenticated MTProto user session.
-- New + edited channel posts.
+- Cloudflare Cron scans the public web view of explicitly configured Telegram channels every two minutes.
+- No Telegram API credentials, Telegram account/session, VPS or third-party air-alert API.
 - Per-channel short-term context for sequences such as “UAV …” → “Course toward Vasylkiv”.
-- Startup backfill after bridge restarts.
-- SQLite outbox and exponential retry when the backend is unavailable.
-- Bridge heartbeat and source-health state (`online / stale / offline`).
+- Scanner heartbeat and source-health state (`online / stale / offline`).
 - Server-side geocoding cache and <=1 Nominatim request/sec.
 - Regional aliases such as `Київщина`, `Сумщина`, `Чернігівщина` are treated as regions rather than fake precise points.
 - Cross-channel deduplication: same type + locality in a 6-minute window becomes one event; multiple sources increase `sourceCount`/confidence.
@@ -26,15 +24,11 @@ RadarUa is a PWA for **near-realtime Telegram monitoring around a user-selected 
 ## Architecture
 
 ```text
-Telegram channels (explicitly configured)
-            │ MTProto / Telethon
+Telegram public channel pages (explicitly configured)
+            │ HTTPS, every 2 minutes
             ▼
-   telegram-bridge (always on)
-   parser + context + SQLite outbox
-            │ Bearer ingest token
-            ▼
-     Cloudflare Worker
-   Durable Object + dedupe
+     Cloudflare Worker + Cron
+  parser + Durable Object + dedupe
      │      │       │
  geocode   WS      Push
      │      │       │
@@ -44,11 +38,9 @@ Telegram channels (explicitly configured)
       GitHub Pages
 ```
 
-## Important: “without API” means without an air-alert API
+## Important: how the free source collector works
 
-To receive arbitrary public channel updates reliably, Telegram requires a legitimate Telegram client authorization. Telegram documents that a third-party client needs its own `api_id` and `api_hash`; create them at `my.telegram.org → API development tools`. Keep both credentials and the resulting session secret private.
-
-This project **does not scrape `t.me/s/...`** as a fallback. Public-web scraping is intentionally not the production path.
+The Worker reads `https://t.me/s/<public-channel>` for only the explicitly allowlisted public channels. This is not a Telegram API connection and does not require a Telegram account. It can miss messages when Telegram changes its public page format, blocks a request, or a channel is made private; therefore it remains informational, not an official alert system. The expected polling delay is up to a few minutes.
 
 ## 1. Deploy the Cloudflare Worker
 
@@ -59,10 +51,9 @@ npx wrangler login
 npx wrangler kv namespace create SUBSCRIPTIONS
 ```
 
-Put the returned KV id into `worker/wrangler.toml`, then create a long random ingest secret:
+Put the returned KV id into `worker/wrangler.toml`, then deploy:
 
 ```bash
-npx wrangler secret put INGEST_TOKEN
 npm run deploy
 ```
 
@@ -72,7 +63,7 @@ Check:
 curl https://YOUR-WORKER.workers.dev/health
 ```
 
-A healthy Worker can still report Telegram `offline` until the bridge is running.
+A healthy Worker reports `online` after the first scheduled public-channel scan (up to two minutes after deploy).
 
 ### Production CORS and source allowlist
 
@@ -83,7 +74,7 @@ ALLOWED_ORIGIN = "https://xott69.github.io"
 SOURCE_ALLOWLIST = "channel_one,channel_two"
 ```
 
-Use the exact usernames configured in the bridge. Keep `SOURCE_ALLOWLIST=""` only while setting up/testing.
+Use the exact public Telegram usernames. Do not include private channels or links with `+` invites.
 
 ## 2. Configure the frontend
 
@@ -104,38 +95,9 @@ Commit to `main`. The included Pages workflow publishes only:
 - `data/feed.js`
 - icons
 
-## 3. Configure Telegram realtime
+## 3. Configure Telegram source polling
 
-See `telegram-bridge/README.md`.
-
-Short version:
-
-```bash
-cd telegram-bridge
-pip install -r requirements.txt
-python login.py
-```
-
-Store the generated `TG_SESSION_STRING` only in your hosting secret manager. Copy `.env.example` → `.env` locally/host-side and set:
-
-```dotenv
-TG_API_ID=...
-TG_API_HASH=...
-TG_SESSION_STRING=...
-TG_CHANNELS=channel_one,channel_two
-RADAR_API_URL=https://YOUR-WORKER.workers.dev
-RADAR_INGEST_TOKEN=...
-```
-
-For reliable live channel updates, the authorized Telegram account should be subscribed to the configured channels. Automatic joining is **off** by default.
-
-Run it on an always-on host:
-
-```bash
-docker compose -f docker-compose.example.yml up -d --build
-```
-
-GitHub Actions/GitHub Pages cannot themselves keep an MTProto listener alive 24/7.
+Edit `SOURCE_ALLOWLIST` in `worker/wrangler.toml` with the public channel usernames, then run `npm run deploy`. The included configuration uses the selected Kyiv sources plus official channels. Cloudflare runs the cron schedule; no separate hosting service is needed.
 
 ## 4. Optional Web Push
 
@@ -175,7 +137,7 @@ RadarUa never extrapolates a trajectory from these messages.
 
 ## Source handling
 
-Only configure channels you have deliberately selected and whose content/use conditions you are prepared to follow. RadarUa stores a short normalized event, source label, message id/link and recent event history required to operate the service; it is not intended as a bulk Telegram archive.
+Only configure public channels you have deliberately selected and whose content/use conditions you are prepared to follow. RadarUa reads a recent public page, stores a short normalized event plus source message link, and is not intended as a bulk Telegram archive.
 
 ## Tests
 

@@ -66,10 +66,13 @@ for path in runtime_paths:
 
 # Do not ship generated Python cache or obvious credentials.
 bot_token = re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b")
+ignored_dirs = {".git", "node_modules", ".wrangler", "__pycache__"}
 for path in ROOT.rglob("*"):
     if path.is_dir():
         if path.name == "__pycache__":
             fail(f"Python cache directory present: {path.relative_to(ROOT)}")
+        continue
+    if any(part in ignored_dirs for part in path.relative_to(ROOT).parts):
         continue
     if path.suffix.lower() in {".png", ".zip"} or path.resolve() == Path(__file__).resolve():
         continue

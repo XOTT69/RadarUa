@@ -1,19 +1,17 @@
-# RadarUa Worker — Telegram-only mode
+# RadarUa Worker — public Telegram mode
 
-Cloudflare Worker + Durable Object receives parsed monitoring events from `telegram-bridge`, deduplicates them, geocodes named localities, exposes realtime WebSocket/API to the PWA and optionally sends Web Push.
+Cloudflare Worker + Cron reads the public web view of selected Telegram channels, parses recent posts, deduplicates them, geocodes named localities, exposes realtime WebSocket/API to the PWA and optionally sends Web Push.
 
 **No alerts.in.ua / UkraineAlarm key is required in this version.**
 
 ## Source allowlist
-After the bridge works, set `SOURCE_ALLOWLIST` in `wrangler.toml` to the configured channel usernames (comma-separated). This prevents a leaked ingest token from being used to inject arbitrary source labels.
+Set `SOURCE_ALLOWLIST` in `wrangler.toml` to public Telegram usernames (comma-separated). The scheduled scanner reads only these public `t.me/s/<username>` pages. No Telegram credentials or separate bridge host are needed.
 
 ## Required
 1. Create KV for push subscriptions (even if push is not configured yet):
    `npx wrangler kv namespace create SUBSCRIPTIONS`
 2. Put the returned KV id into `wrangler.toml`.
-3. Create ingest secret:
-   `npx wrangler secret put INGEST_TOKEN`
-4. Deploy:
+3. Deploy:
    `npm install && npm run deploy`
 5. Put the Worker URL into root `config.js`.
 
@@ -22,17 +20,17 @@ Run `npm run vapid`, then set `VAPID_SUBJECT`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVAT
 
 ## Public endpoints
 - `GET /health`
-- `GET /api/status` — Telegram bridge/channel freshness
+- `GET /api/status` — public-channel scanner freshness
 - `GET /api/threats`
 - `GET /api/places?q=...`
 - `GET /api/stream` (WebSocket)
 - `GET /api/monitoring/events`
 
-## Protected endpoints
+## Optional protected ingest endpoints
 - `POST /api/monitoring/events`
 - `POST /api/bridge/heartbeat`
 
-Both require `Authorization: Bearer <INGEST_TOKEN>`.
+Both require `Authorization: Bearer <INGEST_TOKEN>` when enabled for manual/legacy ingestion. They are not required by the public-channel scanner.
 
 ## Dedupe
 Events of the same type + same named locality inside a 6-minute window are merged. Multiple independent channels raise `sourceCount` and `corroborated`, instead of creating overlapping markers.

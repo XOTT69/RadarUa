@@ -7,6 +7,11 @@ ALLOWED_ORIGIN = "https://xott69.github.io"
 # Explicit Telegram sources selected for Kyiv monitoring. The ingest endpoint rejects others.
 SOURCE_ALLOWLIST = "nebo_raketa,tviy_kyiv,airalarm_kyiv,kiev_kyiv,kyiv_allerts,kpszsu,va_kyiv,dsns_kyiv"
 
+# The Worker polls the public web view of each allowlisted Telegram channel.
+# No Telegram API credentials, user account or separate bridge host are required.
+[triggers]
+crons = ["*/2 * * * *"]
+
 [[durable_objects.bindings]]
 name = "RADAR_HUB"
 class_name = "RadarHub"

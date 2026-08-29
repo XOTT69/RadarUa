@@ -1,6 +1,6 @@
 import { sendPushNotification } from '@mmmike/web-push/send';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org';
 const GEOCODE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 const NOMINATIM_MIN_INTERVAL_MS = 1100;
@@ -10,7 +10,20 @@ const MAX_EVENT_BODY_BYTES = 32_768;
 const DEDUPE_WINDOW_MS = 6 * 60 * 1000;
 const BRIDGE_ONLINE_MS = 90 * 1000;
 const BRIDGE_STALE_MS = 5 * 60 * 1000;
+const PUBLIC_TELEGRAM_MAX_AGE_MS = 14 * 60 * 1000;
+const PUBLIC_TELEGRAM_MAX_MESSAGES = 28;
 const EVENT_TYPES = ['drone', 'missile', 'kab', 'aviation', 'explosion', 'clear'];
+
+const PUBLIC_TYPE_PATTERNS = [
+  ['clear', /(відбій|загроза\s+минула|загрозу\s+скасовано|чисто\s+по)/iu],
+  ['kab', /(каб(?:и|ів|ами)?|фаб[-\s]?(?:250|500|1500)|умпк|керован[\p{L}]*\s+авіабомб[\p{L}]*)/iu],
+  ['missile', /(ракет[\p{L}]*|баліст[\p{L}]*|калібр|калибр|кинджал|іскандер|искандер|циркон|онікс|оникс|х[-\s]?(?:101|555|59|69)|x[-\s]?(?:101|555|59|69))/iu],
+  ['drone', /(бпла|шахед(?:и|ів|ами)?|shahed(?:s)?|герань[\p{L}]*|дрон(?:и|ів|ами)?)/iu],
+  ['aviation', /(авіаці[\p{L}]*|авиаци[\p{L}]*|ту[-\s]?(?:95|160|22)(?:мс|м\d)?|міг[-\s]?31|миг[-\s]?31|су[-\s]?(?:24|34|35)|бомбардувальник[\p{L}]*|тактичн[\p{L}]*\s+авіаці[\p{L}]*)/iu],
+  ['explosion', /(вибух(?:и|ів)?|ппо\s+(?:працює|працювала|працюють)|робота\s+ппо)/iu]
+];
+const PUBLIC_TTL_BY_TYPE = { drone: 90, missile: 45, kab: 45, aviation: 180, explosion: 30, clear: 20 };
+const PUBLIC_LABELS = { drone: 'БПЛА', missile: 'Ракета', kab: 'КАБ', aviation: 'Авіація', explosion: 'Вибухи / ППО', clear: 'Відбій / зниження загрози' };
 
 const REGION_STEMS = [
   ['київщ', 'Київська область'], ['сумщ', 'Сумська область'], ['чернігівщ', 'Чернігівська область'],
@@ -44,6 +57,119 @@ function sourceAllowed(env, raw) {
   const source = norm(raw?.meta?.sourceChannel || raw?.source).replace(/^@/, '');
   return configured.some((item) => source === item || source.includes(item));
 }
+
+function publicTelegramChannels(env) {
+  return String(env.SOURCE_ALLOWLIST || '')
+    .split(',')
+    .map((channel) => channel.trim().replace(/^@/, ''))
+    .filter((channel) => /^[a-zA-Z0-9_]{4,}$/u.test(channel));
+}
+
+function decodeTelegramHtml(value) {
+  const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+  return String(value || '')
+    .replace(/<br\s*\/?\s*>/giu, '\n')
+    .replace(/<[^>]*>/gu, ' ')
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/giu, (entity, code) => {
+      const lower = code.toLowerCase();
+      if (named[lower] !== undefined) return named[lower];
+      if (lower.startsWith('#x')) return String.fromCodePoint(Number.parseInt(lower.slice(2), 16)) || entity;
+      if (lower.startsWith('#')) return String.fromCodePoint(Number.parseInt(lower.slice(1), 10)) || entity;
+      return entity;
+    })
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function parsePublicTelegramPage(html, channel) {
+  const markers = [...String(html || '').matchAll(/data-post="([a-zA-Z0-9_]+\/\d+)"/gu)];
+  const messages = [];
+  for (let index = 0; index < markers.length && messages.length < PUBLIC_TELEGRAM_MAX_MESSAGES; index += 1) {
+    const marker = markers[index];
+    const block = html.slice(marker.index, markers[index + 1]?.index || html.length);
+    const textMatch = block.match(/<div class="tgme_widget_message_text[^"\n]*"[^>]*>([\s\S]*?)<\/div>/iu);
+    const timeMatch = block.match(/<time[^>]+datetime="([^"]+)"/iu);
+    if (!textMatch || !timeMatch) continue;
+    const timestamp = Date.parse(timeMatch[1]);
+    const [postChannel, messageId] = marker[1].split('/');
+    const text = decodeTelegramHtml(textMatch[1]);
+    if (!text || !Number.isFinite(timestamp) || !messageId) continue;
+    messages.push({ channel: postChannel || channel, messageId, text, timestamp: new Date(timestamp).toISOString() });
+  }
+  return messages.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+}
+
+function publicThreatType(text) {
+  return PUBLIC_TYPE_PATTERNS.find(([, pattern]) => pattern.test(text))?.[0] || null;
+}
+
+function publicCourse(text) {
+  const context = text.match(/(?:курс|напрямок|рух)[^\n,.]{0,55}/iu)?.[0] || text;
+  if (/(північний\s*схід|пн\.?\s*[-/]?\s*сх\.?|північно[-\s]східн[\p{L}]*)/iu.test(context)) return 45;
+  if (/(південний\s*схід|пд\.?\s*[-/]?\s*сх\.?|південно[-\s]східн[\p{L}]*)/iu.test(context)) return 135;
+  if (/(південний\s*захід|пд\.?\s*[-/]?\s*зх\.?|південно[-\s]західн[\p{L}]*)/iu.test(context)) return 225;
+  if (/(північний\s*захід|пн\.?\s*[-/]?\s*зх\.?|північно[-\s]західн[\p{L}]*)/iu.test(context)) return 315;
+  if (/(північ|пн\.)/iu.test(context)) return 0;
+  if (/(схід|сх\.)/iu.test(context)) return 90;
+  if (/(південь|пд\.)/iu.test(context)) return 180;
+  if (/(захід|зх\.)/iu.test(context)) return 270;
+  return null;
+}
+
+function cleanPublicLocation(value) {
+  let place = String(value || '').trim().replace(/^[\s\-–—:()\[\]{}🔴🟠🟡⚠️❗️➡️👉]+|[\s\-–—:()\[\]{}🔴🟠🟡⚠️❗️➡️👉]+$/gu, '');
+  place = place.replace(/^(?:м|с|смт)\.?\s+/iu, '').replace(/\s+(?:області|область|району|район|громади|громада)$/iu, '');
+  place = place.replace(/\s+(?:увага|уважно|обережно|можливо|орієнтовно|далі|залишайтесь|укриття)\b.*$/iu, '').trim();
+  if (place.length < 2 || place.length > 64 || /^(?:на|до|в|у|бік|напрямок|курс)$/iu.test(place)) return null;
+  return place;
+}
+
+function publicLocations(text) {
+  const patterns = [
+    ['destination', /(?:бпла|шахед(?:и|ів|ами)?|shahed(?:s)?|дрон(?:и|ів|ами)?|ракет\w*|каб(?:и|ів|ами)?)\s+(?:на|до)\s+([^,.;!\n]{2,64})/giu],
+    ['destination', /(?:курс(?:ом)?|пряму(?:є|ють)|руха(?:є|ю)ться|лет(?:ить|ять)|йд(?:е|уть)|у\s+напрямку|в\s+напрямку|напрямок)\s*(?:на|до|в\s+бік|у\s+бік)?\s+([^,.;!\n]{2,64})/giu],
+    ['near', /(?:біля|поблизу|над|в\s+районі|у\s+районі|районі|район)\s+([^,.;!\n]{2,64})/giu]
+  ];
+  const found = [], seen = new Set();
+  for (const [role, pattern] of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      for (const raw of match[1].split(/\s*(?:\/|→|➡️|\s+та\s+|\s+і\s+)\s*/iu).slice(0, 3)) {
+        const location = cleanPublicLocation(raw);
+        const key = norm(location);
+        if (location && !seen.has(key)) { seen.add(key); found.push({ location, role }); }
+      }
+    }
+  }
+  return found.slice(0, 3);
+}
+
+function publicThreatPayloads(message, inheritedType) {
+  const explicitType = publicThreatType(message.text);
+  const locations = publicLocations(message.text);
+  const type = explicitType || (locations.length && ['drone', 'missile', 'kab', 'aviation'].includes(inheritedType) ? inheritedType : null);
+  if (!type) return { type: explicitType, payloads: [] };
+  const count = Number(message.text.match(/(?<!\d)(\d{1,2})\s*(?:х|x|×)?\s*(?=(?:бпла|шахед|shahed|дрон|ракет|калібр|кинджал|іскандер|каб|фаб))/iu)?.[1]) || null;
+  const title = count > 1 ? `${count}× ${PUBLIC_LABELS[type]}` : PUBLIC_LABELS[type];
+  const targets = locations.length ? locations : [{ location: null, role: null }];
+  return {
+    type: explicitType,
+    payloads: targets.map(({ location, role }, index) => ({
+      id: `tg-web-${message.channel}-${message.messageId}-${index}`,
+      type, title, detail: trimText(message.text, 900), location,
+      course: publicCourse(message.text), confidence: locations.length ? 'medium' : 'low',
+      source: `@${message.channel}`, timestamp: message.timestamp, ttlMinutes: PUBLIC_TTL_BY_TYPE[type],
+      meta: {
+        count, locationRole: role, sourceMessageId: `${message.channel}:${message.messageId}`,
+        sourceUrl: `https://t.me/${message.channel}/${message.messageId}`,
+        sourceChannelId: message.channel, sourceChannel: `@${message.channel}`,
+        parserVersion: VERSION, sourceAccess: 'public_telegram_web',
+        locationInterpretation: 'named_or_destination_locality_not_confirmed_target_position'
+      }
+    }))
+  };
+}
+
+export const publicTelegramParser = { parsePublicTelegramPage, publicThreatPayloads };
 
 function normAdmin(v) {
   return norm(v)
@@ -195,8 +321,8 @@ async function threatsResponse(request, env) {
     items,
     localityStatus: null,
     generatedAt: new Date().toISOString(),
-    monitoring: { ...status, localCount, sourceMode: 'telegram-only' },
-    notice: 'Telegram-моніторинг не є офіційною системою оповіщення. Точки на карті — центри згаданих населених пунктів, не координати цілей.'
+    monitoring: { ...status, localCount, sourceMode: 'public-telegram-web' },
+    notice: 'Моніторинг публічних Telegram-каналів не є офіційною системою оповіщення. Точки на карті — центри згаданих населених пунктів, не координати цілей.'
   }, 200, env, request, { 'Cache-Control': 'no-store' });
 }
 function pushEnabled(env) {
@@ -277,12 +403,9 @@ async function pushMonitoringEvent(env, event) {
     });
   }
 }
-async function ingestEvent(request, env, ctx) {
-  if (!env.INGEST_TOKEN || bearer(request) !== env.INGEST_TOKEN) return json({ error: 'unauthorized' }, 401, env, request);
-  const raw = await readJson(request);
-  if (!raw) return json({ error: 'invalid_json' }, 400, env, request);
-  if (!EVENT_TYPES.includes(raw.type)) return json({ error: 'unsupported_event_type' }, 400, env, request);
-  if (!sourceAllowed(env, raw)) return json({ error: 'source_not_allowed' }, 403, env, request);
+async function processMonitoringEvent(env, raw) {
+  if (!EVENT_TYPES.includes(raw?.type)) return { status: 400, result: { error: 'unsupported_event_type' } };
+  if (!sourceAllowed(env, raw)) return { status: 403, result: { error: 'source_not_allowed' } };
 
   const location = trimText(raw.location || raw.meta?.location, 180);
   const region = canonicalRegion(location);
@@ -310,8 +433,15 @@ async function ingestEvent(request, env, ctx) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(raw)
   }));
   const result = await hubResponse.json();
-  if (hubResponse.ok && result.event && result.isNew) ctx.waitUntil(pushMonitoringEvent(env, result.event));
-  return json(result, hubResponse.status, env, request, { 'Cache-Control': 'no-store' });
+  return { status: hubResponse.status, result };
+}
+async function ingestEvent(request, env, ctx) {
+  if (!env.INGEST_TOKEN || bearer(request) !== env.INGEST_TOKEN) return json({ error: 'unauthorized' }, 401, env, request);
+  const raw = await readJson(request);
+  if (!raw) return json({ error: 'invalid_json' }, 400, env, request);
+  const { status, result } = await processMonitoringEvent(env, raw);
+  if (status < 300 && result.event && result.isNew) ctx.waitUntil(pushMonitoringEvent(env, result.event));
+  return json(result, status, env, request, { 'Cache-Control': 'no-store' });
 }
 async function bridgeHeartbeat(request, env) {
   if (!env.INGEST_TOKEN || bearer(request) !== env.INGEST_TOKEN) return json({ error: 'unauthorized' }, 401, env, request);
@@ -322,6 +452,55 @@ async function bridgeHeartbeat(request, env) {
   }));
   const result = await response.json();
   return json(result, response.status, env, request, { 'Cache-Control': 'no-store' });
+}
+
+async function savePublicScannerHeartbeat(env, channels, healthy, detail = '') {
+  const body = {
+    bridgeId: 'cloudflare-public-telegram', version: VERSION,
+    startedAt: null, queueDepth: 0, telegramConnected: healthy,
+    sourceMode: 'public_telegram_web', detail,
+    channels: channels.map((channel) => ({
+      id: channel, name: `@${channel}`, title: `Telegram @${channel}`, username: channel,
+      lastMessageAt: null, lastMessageId: null
+    }))
+  };
+  await getHub(env).fetch(new Request('https://hub/heartbeat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }));
+}
+
+async function scanPublicTelegram(env) {
+  const channels = publicTelegramChannels(env);
+  let healthyChannels = 0;
+  let parsedEvents = 0;
+  const now = Date.now();
+  for (const channel of channels) {
+    try {
+      const response = await fetch(`https://t.me/s/${encodeURIComponent(channel)}`, {
+        headers: { 'User-Agent': 'RadarUa-Public-Monitor/2.1 (+https://github.com/XOTT69/RadarUa)', 'Accept-Language': 'uk' },
+        cf: { cacheTtl: 0, cacheEverything: false }
+      });
+      if (!response.ok) throw new Error(`telegram_http_${response.status}`);
+      healthyChannels += 1;
+      let inheritedType = null;
+      for (const message of parsePublicTelegramPage(await response.text(), channel)) {
+        const age = now - Date.parse(message.timestamp);
+        const { type, payloads } = publicThreatPayloads(message, inheritedType);
+        if (type && ['drone', 'missile', 'kab', 'aviation'].includes(type)) inheritedType = type;
+        if (type === 'clear') inheritedType = null;
+        if (age < -5 * 60_000 || age > PUBLIC_TELEGRAM_MAX_AGE_MS) continue;
+        for (const payload of payloads) {
+          const outcome = await processMonitoringEvent(env, payload);
+          if (outcome.status < 300 && outcome.result?.event?.isNew) await pushMonitoringEvent(env, outcome.result.event);
+          if (outcome.status < 300) parsedEvents += 1;
+        }
+      }
+    } catch (error) {
+      console.error(`Public Telegram scan failed for @${channel}`, error?.message || error);
+    }
+  }
+  await savePublicScannerHeartbeat(env, channels, healthyChannels > 0, `${healthyChannels}/${channels.length} channel(s) reachable; ${parsedEvents} events processed`);
+  return { healthyChannels, channelCount: channels.length, parsedEvents };
 }
 
 export class RadarHub {
@@ -502,6 +681,8 @@ export class RadarHub {
       lastHeartbeatAt: now,
       queueDepth: clamp(Number(raw.queueDepth || 0), 0, 1_000_000),
       telegramConnected: raw.telegramConnected !== false,
+      sourceMode: trimText(raw.sourceMode || 'telegram_api', 40),
+      detail: trimText(raw.detail, 240),
       channels: Array.isArray(raw.channels) ? raw.channels.slice(0, 100).map((c) => ({
         id: trimText(c.id, 120), name: trimText(c.name, 180), title: trimText(c.title, 180), username: trimText(c.username, 120),
         lastMessageAt: c.lastMessageAt || null, lastMessageId: c.lastMessageId ?? null
@@ -532,6 +713,7 @@ export class RadarHub {
       channelCount: channels.length,
       queueDepth: bridges.reduce((sum, b) => sum + Number(b.queueDepth || 0), 0),
       telegramConnected,
+      sourceMode: bridges.find((b) => b.sourceMode === 'public_telegram_web')?.sourceMode || 'telegram_api',
       bridges,
       channels
     };
@@ -592,7 +774,7 @@ export default {
 
     if (url.pathname === '/health' && request.method === 'GET') {
       return json({
-        ok: true, service: 'radarua-api', version: VERSION, sourceMode: 'telegram-only',
+        ok: true, service: 'radarua-api', version: VERSION, sourceMode: 'public-telegram-web',
         ingestTokenConfigured: Boolean(env.INGEST_TOKEN), realtime: Boolean(env.RADAR_HUB), pushConfigured: pushEnabled(env),
         monitoring: await hubStatus(env)
       }, 200, env, request, { 'Cache-Control': 'no-store' });
@@ -613,5 +795,8 @@ export default {
     if (url.pathname === '/api/push/subscribe' && request.method === 'POST') return subscribePush(request, env);
     if (url.pathname === '/api/push/unsubscribe' && (request.method === 'POST' || request.method === 'DELETE')) return unsubscribePush(request, env);
     return json({ error: 'not_found' }, 404, env, request);
+  },
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(scanPublicTelegram(env));
   }
 };

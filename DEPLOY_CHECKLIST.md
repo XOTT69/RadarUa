@@ -1,13 +1,12 @@
-# Deploy checklist — Telegram-only v2
+# Deploy checklist — public Telegram v2.1
 
-- [ ] Обрано дозволені Telegram-канали для `TG_CHANNELS`.
+- [ ] Обрано публічні Telegram-канали для `SOURCE_ALLOWLIST`.
 - [ ] Створено Cloudflare KV namespace `SUBSCRIPTIONS`.
 - [ ] KV `id` вставлено у `worker/wrangler.toml`.
-- [ ] У Cloudflare додано `INGEST_TOKEN`; для push — також VAPID secrets.
-- [ ] Worker задеплоєно та `/health` показує `ingestTokenConfigured: true`.
+- [ ] Worker задеплоєно; через 2–3 хвилини `/health` показує `monitoring.state: "online"`.
 - [ ] URL Worker вставлено у кореневий `config.js`.
 - [ ] У `wrangler.toml` `ALLOWED_ORIGIN` змінено з `*` на URL GitHub Pages.
-- [ ] Bridge запущено на always-on хостингу з секретами, що не зберігаються у Git.
+- [ ] Переконатися, що в `SOURCE_ALLOWLIST` немає приватних каналів або інвайт-посилань.
 - [ ] GitHub Pages: Source = GitHub Actions.
 - [ ] PWA встановлено на телефон.
 - [ ] У PWA вибрано населений пункт.

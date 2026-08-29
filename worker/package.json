@@ -1,12 +1,12 @@
 {
   "name": "radarua-worker",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "check": "node --check src/index.js",
+    "check": "node --check src/index.js && node --test test/*.test.mjs",
     "vapid": "node scripts/generate-vapid.mjs"
   },
   "dependencies": {

@@ -1,6 +1,6 @@
-# Final deployment checklist — Telegram-only v2
+# Final deployment checklist — public Telegram v2.1
 
-- [ ] Вказано дозволені джерела у `TG_CHANNELS`.
+- [ ] Вказано публічні дозволені джерела у `SOURCE_ALLOWLIST`.
 - [ ] Створено Cloudflare KV `SUBSCRIPTIONS` і ID вставлено у `worker/wrangler.toml`.
 - [ ] Додано Cloudflare secrets: `INGEST_TOKEN`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`.
 - [ ] Worker розгорнуто; `/health` повертає `ok: true`.
@@ -9,4 +9,4 @@
 - [ ] GitHub Pages використовує GitHub Actions.
 - [ ] У PWA вибрано свій населений пункт.
 - [ ] Push перевірено на реальному пристрої.
-- [ ] Telegram bridge запускається лише з дозволеними джерелами.
+- [ ] Через 2–3 хвилини після deploy `/api/status` показує `public_telegram_web` та `online`.

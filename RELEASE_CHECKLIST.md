@@ -17,21 +17,17 @@
 - [ ] `ALLOWED_ORIGIN` is changed from `*` to the GitHub Pages origin after setup.
 - [ ] `SOURCE_ALLOWLIST` is set after final source selection.
 
-## Telegram bridge
-- [ ] Own Telegram `api_id` / `api_hash` created.
-- [ ] `TG_SESSION_STRING` generated locally and stored only as a secret.
-- [ ] Telegram account is subscribed to all configured channels.
-- [ ] `TG_CHANNELS` contains only deliberately selected sources.
-- [ ] Bridge is on an always-on host.
-- [ ] `/api/status` reports `online` and the expected channel count.
-- [ ] SQLite outbox volume is persistent.
+## Public Telegram collector
+- [ ] `SOURCE_ALLOWLIST` contains only deliberately selected public channel usernames.
+- [ ] No private channels or `t.me/+...` invite links are configured.
+- [ ] `/api/status` reports `public_telegram_web`, `online` and the expected channel count after the first scheduled run.
 
 ## Realtime test
-- [ ] Send a test event with `tools/send_test_event.py` or wait for a source message.
+- [ ] Wait for a source message or invoke a local scheduled-event test.
 - [ ] Event arrives without a page reload over WebSocket.
 - [ ] Event marker says it is an approximate locality point.
 - [ ] A duplicate from another channel merges and increments source count.
-- [ ] After stopping bridge >90 sec, UI stops claiming Telegram is online.
+- [ ] When all public source pages are unreachable for >5 minutes, UI stops claiming the collector is online.
 
 ## Optional Push
 - [ ] VAPID keys configured.

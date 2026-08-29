@@ -234,8 +234,9 @@ async function refreshThreats({ silent = false } = {}) {
     state.initialized = true;
     renderAll();
     $('lastUpdated').textContent = `оновлено ${new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
-    if (state.monitoringStatus?.state === 'online') setConnection(state.wsConnected ? 'Telegram · realtime' : 'Telegram · онлайн');
-    else if (state.monitoringStatus?.state === 'stale') setConnection('Telegram · дані застаріли');
+    const sourceLabel = state.monitoringStatus?.sourceMode === 'public_telegram_web' ? 'Публічні Telegram-канали' : 'Telegram';
+    if (state.monitoringStatus?.state === 'online') setConnection(state.wsConnected ? `${sourceLabel} · realtime` : `${sourceLabel} · онлайн`);
+    else if (state.monitoringStatus?.state === 'stale') setConnection(`${sourceLabel} · дані застаріли`);
     else setConnection('Telegram · потік офлайн');
   } catch (error) {
     console.error(error); setConnection('помилка backend'); if (!silent) showToast(error.message || 'Не вдалося оновити дані');
