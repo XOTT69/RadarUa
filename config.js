@@ -1,6 +1,6 @@
 window.RADAR_CONFIG = {
-  version: '2.0.0',
-  mode: 'telegram',
+  version: '2.1.0',
+  mode: 'public-telegram+neptun',
   // Cloudflare Worker production endpoint.
   apiBaseUrl: 'https://radarua-api.ai-beta69690.workers.dev',
   refreshMs: 15000,
