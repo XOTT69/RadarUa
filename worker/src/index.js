@@ -75,7 +75,7 @@ function originAllowed(env, request) {
 function corsHeaders(env, request) {
   const origin = request?.headers.get('Origin') || '';
   const allowed = allowedOrigins(env);
-  const value = allowed.includes('*') || !origin ? '*' : origin;
+  const value = allowed.includes('*') ? '*' : (origin && allowed.includes(origin) ? origin : 'null');
   return {
     'Access-Control-Allow-Origin': value,
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
@@ -96,7 +96,11 @@ function bearer(request) {
 async function readJson(request) {
   const declared = Number(request.headers.get('Content-Length') || 0);
   if (declared > MAX_EVENT_BODY_BYTES) return null;
-  try { return await request.json(); } catch { return null; }
+  try {
+    const text = await request.text();
+    if (new TextEncoder().encode(text).byteLength > MAX_EVENT_BODY_BYTES) return null;
+    return JSON.parse(text);
+  } catch { return null; }
 }
 async function sha256(value) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
@@ -249,6 +253,7 @@ async function sendPush(env, record, payload) {
     if (delivered === false) await pruneSubscription(env, record);
     return delivered;
   } catch (error) {
+    if (error?.statusCode === 404 || error?.statusCode === 410) await pruneSubscription(env, record);
     console.error('push failed', error?.message || error);
     return null;
   }
@@ -282,7 +287,9 @@ async function ingestEvent(request, env, ctx) {
   const location = trimText(raw.location || raw.meta?.location, 180);
   const region = canonicalRegion(location);
   if (region) raw.meta = { ...(raw.meta || {}), oblast: region, locationScope: 'region' };
-  if (location && !(Number.isFinite(Number(raw.lat)) && Number.isFinite(Number(raw.lon)))) {
+  // An oblast is an administrative match, not a point. Do not geocode it to an
+  // oblast centroid: that would look like a claimed target position on the map.
+  if (location && !region && !(Number.isFinite(Number(raw.lat)) && Number.isFinite(Number(raw.lon)))) {
     const context = trimText(raw.meta?.oblast, 120);
     const query = region || (context ? `${location}, ${context}, Україна` : `${location}, Україна`);
     const places = await hubGeocode(env, query);
@@ -580,8 +587,8 @@ export class RadarHub {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(env, request) });
     if (!originAllowed(env, request)) return json({ error: 'origin_not_allowed' }, 403, env, request);
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(env, request) });
 
     if (url.pathname === '/health' && request.method === 'GET') {
       return json({

@@ -1,12 +1,13 @@
-# Deploy checklist — v3
+# Deploy checklist — Telegram-only v2
 
-- [ ] Отримано token alerts.in.ua.
+- [ ] Обрано дозволені Telegram-канали для `TG_CHANNELS`.
 - [ ] Створено Cloudflare KV namespace `SUBSCRIPTIONS`.
 - [ ] KV `id` вставлено у `worker/wrangler.toml`.
-- [ ] Згенеровано VAPID public/private keys.
-- [ ] У Cloudflare додано secrets: `ALERTS_TOKEN`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`.
-- [ ] Worker задеплоєно та `/health` показує `alertsTokenConfigured: true`, `pushConfigured: true`.
+- [ ] У Cloudflare додано `INGEST_TOKEN`; для push — також VAPID secrets.
+- [ ] Worker задеплоєно та `/health` показує `ingestTokenConfigured: true`.
 - [ ] URL Worker вставлено у кореневий `config.js`.
+- [ ] У `wrangler.toml` `ALLOWED_ORIGIN` змінено з `*` на URL GitHub Pages.
+- [ ] Bridge запущено на always-on хостингу з секретами, що не зберігаються у Git.
 - [ ] GitHub Pages: Source = GitHub Actions.
 - [ ] PWA встановлено на телефон.
 - [ ] У PWA вибрано населений пункт.

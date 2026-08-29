@@ -1,0 +1,9 @@
+# Local development only — do not commit worker/.dev.vars.
+INGEST_TOKEN=replace_with_a_long_random_value
+ALLOWED_ORIGIN=http://localhost:8787
+SOURCE_ALLOWLIST=channel_one,channel_two
+
+# Optional Web Push settings.
+# VAPID_SUBJECT=mailto:you@example.com
+# VAPID_PUBLIC_KEY=
+# VAPID_PRIVATE_KEY=

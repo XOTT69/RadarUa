@@ -1,0 +1,18 @@
+# Secrets and local runtime state
+.env
+.env.*
+!.env.example
+worker/.dev.vars
+telegram-bridge/*.session
+telegram-bridge/*.sqlite3
+telegram-bridge/*.sqlite3-*
+
+# Dependencies and generated files
+node_modules/
+worker/node_modules/
+worker/.wrangler/
+telegram-bridge/__pycache__/
+*.py[cod]
+
+# OS/editor files
+.DS_Store

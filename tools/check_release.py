@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 and older; keep local release checks dependency-free.
+    tomllib = None
 
 ROOT = Path(__file__).resolve().parents[1]
 errors: list[str] = []
@@ -23,8 +27,16 @@ for rel in ("manifest.webmanifest", "worker/package.json"):
     except Exception as exc:
         fail(f"Invalid JSON {rel}: {exc}")
 try:
-    with (ROOT / "worker/wrangler.toml").open("rb") as fh:
-        tomllib.load(fh)
+    wrangler = ROOT / "worker/wrangler.toml"
+    if tomllib is not None:
+        with wrangler.open("rb") as fh:
+            tomllib.load(fh)
+    else:
+        # CI validates the complete TOML document with Python 3.13. This fallback
+        # still catches a missing or clearly truncated file on older local Python.
+        text = wrangler.read_text(encoding="utf-8")
+        if 'name = "radarua-api"' not in text or '[durable_objects.bindings]' not in text:
+            raise ValueError("missing required Worker configuration")
 except Exception as exc:
     fail(f"Invalid TOML worker/wrangler.toml: {exc}")
 
@@ -69,7 +81,7 @@ for path in ROOT.rglob("*"):
 required = [
     "index.html", "app.js", "styles.css", "config.js", "sw.js", "manifest.webmanifest",
     "data/feed.js", "worker/src/index.js", "telegram-bridge/bridge.py",
-    "telegram-bridge/parser.py", ".github/workflows/pages.yml",
+    "telegram-bridge/parser.py", ".github/workflows/static.yml",
 ]
 for rel in required:
     if not (ROOT / rel).is_file():

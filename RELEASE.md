@@ -1,7 +1,6 @@
-# Release 3.0.0
+# Release 2.0.0
 
-Milestone: **офіційні тривоги + свій населений пункт + realtime monitoring**.
+Milestone: **Telegram monitoring + свій населений пункт + realtime**.
 
 Архітектура:
-`alerts.in.ua → Worker → PWA`
 `explicit Telegram sources → Telethon bridge → protected ingest → Durable Object → WebSocket → PWA`
